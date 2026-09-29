@@ -2724,6 +2724,33 @@ class Car {
     const hRelW = wrapAngle(this.heading - f.heading);
     const reach = Math.min(CAR_HW * Math.abs(Math.cos(hRelW)) + CAR_HL * Math.abs(Math.sin(hRelW)), 2.4);
     const lim = RW - reach;
+    this.wallCool = Math.max(0, (this.wallCool || 0) - h);
+    {
+      // cushion: over the last metre and a bit before the barrier, bleed the sideways speed off with a
+      // bounded deceleration, so the car turns parallel over several frames instead of kinking in one
+      const side = Math.sign(this.d) || 1, gap = lim - Math.abs(this.d), into = vd * side;
+      if (gap < 1.4 && into > 0.05 && Math.abs(this.speed) > 1) {
+        // the hit (sparks, sound, shake) lands on contact, as hard as the approach was
+        this.approach = Math.max(this.approach || 0, into);
+        if (gap < 0.15 && this.approach > 3.2 && this.wallCool <= 0) {
+          this.wobbleV += side * clamp(this.approach * 0.005, 0, 0.15);
+          this.events.push({ type: 'wall', strength: clamp(this.approach / 22, 0.15, 1), side });
+          this.stats.walls++; this.wallCool = 0.35; this.approach = 0;
+        }
+        const need = (into * into) / (2 * Math.max(gap, 0.08));
+        const dv = Math.min(into, Math.min(need, 260) * h);        // sideways speed removed this step
+        const vT = this.speed * Math.cos(alpha), vL = -this.speed * Math.sin(alpha) - side * dv;
+        const loss = Math.min(0.35 * dv, Math.abs(vT) * 0.02);      // friction from the push, spread over the contact
+        const nT = Math.sign(vT) * Math.max(Math.min(Math.abs(vT), 30), Math.abs(vT) - loss);
+        const sp = Math.hypot(nT, vL) * (vT >= 0 ? 1 : -1);
+        this.speed = sp;
+        this.travel = f.heading + Math.atan2(-vL / sp, nT / sp);
+        this.pushV *= 0.5;
+        if (gap < 0.25) this.scrape = Math.max(this.scrape, clamp(av / 60, 0.2, 1));
+        // the nose follows round toward parallel as well, or grip would keep steering it back in
+        if (gap < 0.8 && hRelW * side < 0) this.heading -= hRelW * (1 - Math.exp(-4 * h));
+      } else if (gap > 1.6) this.approach = 0;
+    }
     if (Math.abs(this.d) > lim) {
       const side = Math.sign(this.d);
       const into = vd * side;
@@ -2731,25 +2758,26 @@ class Car {
       this.d = side * Math.max(lim, Math.abs(this.d) - Math.max(0, into) * h - 0.6 * h * 10);
       if (Math.abs(this.d) > D_LIMIT + 0.05) this.d = side * (D_LIMIT + 0.05);
       if (into > 0) {
+        // whatever sideways speed is left at the barrier dies within a few steps (bounded, not instant)
         const vT = this.speed * Math.cos(alpha);
-        // friction proportional to the impact impulse; a long scrape can't grind the car below ~30 m/s
-        const loss = Math.min(0.3 * into * 1.18, Math.abs(vT) * 0.28);
+        const dv = Math.min(into, 420 * h);
+        const loss = Math.min(0.3 * dv * 1.18, Math.abs(vT) * 0.05);
         const floor = Math.min(Math.abs(vT), 30);
-        const nT = Math.sign(vT) * Math.max(floor, Math.abs(vT) - loss), nL = -side * Math.min(into * 0.18, 3);
+        const nT = Math.sign(vT) * Math.max(floor, Math.abs(vT) - loss), nL = side * (into - dv);   // lateral velocity still into the barrier
         const sp = Math.hypot(nT, nL) * (vT >= 0 ? 1 : -1);
         this.speed = sp;
         const na = Math.abs(sp) > 0.01 ? Math.atan2(-nL / sp, nT / sp) : 0;
         this.travel = f.heading + na;
         this.pushV = 0;
-        if (into > 3.2) {
+        if (into > 3.2 && this.wallCool <= 0) {
           this.wobbleV += side * clamp(into * 0.005, 0, 0.15);
           this.events.push({ type: 'wall', strength: clamp(into / 22, 0.15, 1), side });
-          this.stats.walls++;
+          this.stats.walls++; this.wallCool = 0.35;
         }
         this.scrape = Math.max(this.scrape, clamp(av / 60, 0.2, 1));
       }
       // ease the nose back parallel to the barrier over ~0.15 s instead of snapping it
-      if (hRelW * side < 0) this.heading -= hRelW * (1 - Math.exp(-6 * h));
+      if (hRelW * side < 0) this.heading -= hRelW * (1 - Math.exp(-4.5 * h));
     }
     this.scrape = Math.max(0, this.scrape - h * 3);
 
@@ -4231,7 +4259,10 @@ function updateCamera(rawDt, dt, car) {
     }
     Cam.pos.copy(car.pos).add(Cam.offset);
     // look ahead along the direction of travel (shows the car's flank while drifting)
-    const tdir = _v3.set(Math.sin(car.travel), 0, Math.cos(car.travel));
+    // aim along a smoothed direction of travel: a hard change of direction must never snap the view
+    if (Cam.lookYaw === undefined || Cam.lookCar !== car) { Cam.lookYaw = car.travel; Cam.lookCar = car; }
+    Cam.lookYaw += wrapAngle(car.travel - Cam.lookYaw) * (1 - Math.exp(-9 * rawDt));
+    const tdir = _v3.set(Math.sin(Cam.lookYaw), 0, Math.cos(Cam.lookYaw));
     Cam.look.copy(car.pos).addScaledVector(tdir, mode === 'countdown' ? 2 : 7).addScaledVector(up, 1.15);
     lookUp = up;
     fovT = 63 + 21 * Math.pow(Math.min(sN, 1.25), 1.7) + (car.boostActive ? 7 : 0);
@@ -4769,7 +4800,7 @@ function startRace() {
   placeGrid(order);
   drivers.forEach((d, i) => { d.offset = d.car.d; d.boostCool = 3 + Math.random() * 6; d.reaction = 0.05 + Math.random() * 0.3; d.skill = RIVALS[i].skill * (0.985 + Math.random() * 0.03); });
   playerAI.offset = player.d;
-  Cam.offset.set(0, 2, -7); Cam.yaw = player.heading; Cam.fov = 60;
+  Cam.offset.set(0, 2, -7); Cam.yaw = player.heading; Cam.fov = 60; Cam.lookYaw = undefined;
   streamWorld(true);
   setStartLights(0, false);
   HUD.last = {};
@@ -5287,6 +5318,7 @@ async function init() {
   window.__audioRef = () => audio;
   window.__bloomPatched = () => bloomPass.materialHighPassFilter.fragmentShader.includes('bool ok');
   window.__three = () => ({ THREE, renderer, scene, camera });
+  window.__updCam = (rawDt, dt, car) => updateCamera(rawDt, dt, car);
   window.__dev = () => ({ headlight, bloomPass, finalPass, FX, MAT, Cam, scene, player, game, Track, track, Stream, cars, buildChunk, CITY_STATS, quadsOverlap });
   window.__lightning = () => { LIGHTNING.next = 0; };
   // test hook: output level of the audio graph (rms, peak)
@@ -5313,7 +5345,7 @@ async function init() {
     cars.forEach((c, i) => { c.upd(0); FX.trails.reset(i * 2, c.pos); FX.trails.reset(i * 2 + 1, c.pos); });
     drivers.forEach((d) => { d.offset = d.car.d; });
     if (camMode) { Cam.mode = camMode; Cam.shot = -1; }
-    Cam.yaw = player.heading; Cam.offset.set(-Math.sin(player.heading) * 7, 2.2, -Math.cos(player.heading) * 7);
+    Cam.yaw = player.heading; Cam.lookYaw = undefined; Cam.offset.set(-Math.sin(player.heading) * 7, 2.2, -Math.cos(player.heading) * 7);
     streamWorld(true);
     return { start: START_S, finish: track.finishS - START_S, features: track.features.map((f) => ({ type: f.type, s0: Math.round(f.s0 - START_S), s1: Math.round(f.s1 - START_S) })) };
   };
