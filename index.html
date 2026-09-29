@@ -4841,14 +4841,14 @@ function startRace() {
   for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
   order.push(player);
   placeGrid(order);
-  drivers.forEach((d, i) => { d.offset = d.car.d; d.boostCool = 3 + Math.random() * 6; d.reaction = 0.05 + Math.random() * 0.3; d.skill = RIVALS[i].skill * (0.985 + Math.random() * 0.03); });
+  drivers.forEach((d, i) => { d.offset = d.car.d; d.boostTimer = 0; d.stuckT = 0; d.startDelay = 0; d.boostCool = 3 + Math.random() * 6; d.reaction = 0.05 + Math.random() * 0.3; d.skill = RIVALS[i].skill * (0.985 + Math.random() * 0.03); });
   playerAI.offset = player.d;
   Cam.offset.set(0, 2, -7); Cam.yaw = player.heading; Cam.fov = 60; Cam.lookYaw = undefined;
   streamWorld(true);
   setStartLights(0, false);
   HUD.last = {};
   if (audio.ok) audio.music.setLevel(0);
-  HUD.el.delta.textContent = ''; HUD.el.delta.className = '';
+  HUD.el.delta.textContent = ''; HUD.el.delta.className = ''; HUD.el.wrong.classList.add('hidden');
   Cam.shot = -1;
   const lbl = HUD.el.cam; lbl.textContent = CAM_LABEL[Cam.mode]; lbl.classList.add('show');
   clearTimeout(lbl._t); lbl._t = setTimeout(() => lbl.classList.remove('show'), 1800);
@@ -4938,7 +4938,8 @@ function showResults() {
 
 function handleCarEvents() {
   for (const car of cars) {
-    const isP = car === player;
+    // the player's flashes, whooshes and camera shake only while the player is actually driving it
+    const isP = car === player && (game.state === 'race' || game.state === 'countdown' || game.state === 'finish');
     const near = !isP ? clamp(1 - car.pos.distanceTo(camera.position) / 60, 0, 1) : 1;
     for (const e of car.events) {
       switch (e.type) {
@@ -5040,7 +5041,7 @@ function aiControl(h, st, racing) {
   }
   // launch reaction delay
   const t = game.raceTime + game.subT;
-  if (st === 'race' && t < 0.5) for (const d of drivers) if (t < (d.startDelay || 0)) { d.car.ctl.throttle = 0; d.car.ctl.brake = 0; }
+  if (st === 'race' && t < 0.5) for (const d of drivers) if (t < (d.startDelay || 0)) { d.car.ctl.throttle = 0; d.car.ctl.brake = 0; d.car.ctl.boost = false; }
 }
 function simulate(dt) {
   const st = game.state;
@@ -5262,7 +5263,7 @@ function frame(now) {
     }
   } else if (game.state === 'title' && !$('panel').classList.contains('hidden') && Input.action('back')) {
     onMenuAction('close');
-  } else if (game.state === 'results' && Input.action('back')) onMenuAction('menu');
+  } else if (game.state === 'results' && game.clock - game.resultsAt > 1.2 && Input.action('back')) onMenuAction('menu');
   if (game.state === 'title' || (game.state === 'results' && game.clock - game.resultsAt > 1.2) || game.paused) Menu.update();
   if (game.state === 'title' && TEST && game.clock > 1.0) startRace();
   // the attract-mode race restarts from the gantry now and then
@@ -5396,7 +5397,10 @@ async function init() {
     return { start: START_S, finish: track.finishS - START_S, features: track.features.map((f) => ({ type: f.type, s0: Math.round(f.s0 - START_S), s1: Math.round(f.s1 - START_S) })) };
   };
   if (touchMode) document.body.classList.add('touch');
-  document.addEventListener('visibilitychange', () => { if (document.hidden) pauseGame(true); });
+  document.addEventListener('visibilitychange', () => {
+    // a hidden tab gets no frames, so the sound would hang at its last level: suspend it
+    if (document.hidden) { pauseGame(true); if (audio.ok) audio.ctx.suspend().catch(() => {}); } else if (audio.ok) audio.ctx.resume().catch(() => {});
+  });
   lastT = performance.now();
   requestAnimationFrame(frame);
 }
