@@ -4537,7 +4537,9 @@ function makeFinalShader(samples) {
           col = vec3(texture2D(tDiffuse, uvIn + ca).r, texture2D(tDiffuse, uvIn).g, texture2D(tDiffuse, uvIn - ca).b);
         } else {
           col = vec3(0.0);
-          float j = hash(vUv * 731.0 + fract(uTime));
+          // a fixed per-pixel dither (interleaved gradient noise): re-rolling it every frame made small
+          // bright details such as lit windows twinkle whenever the speed blur was active
+          float j = fract(52.9829189 * fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715))));
           for (int i = 0; i < SAMPLES; i++) {
             float t = (float(i) + j) / float(SAMPLES);
             vec2 uv = uvIn - dir * amt * t;
