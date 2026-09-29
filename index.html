@@ -1330,13 +1330,13 @@ function buildMaterials(envMap) {
   // raindrop ripples in the puddles: perturb the shading normal near the camera
   MAT.roadRain = { value: 1 };
   MAT.road.onBeforeCompile = (sh) => {
-    sh.uniforms.uTime = U.uTime; sh.uniforms.uRain = MAT.roadRain;
+    sh.uniforms.uTime = U.uTime; sh.uniforms.uRain = MAT.roadRain; sh.uniforms.uOrigin = U.uOrigin;
     sh.vertexShader = sh.vertexShader
       .replace('#include <common>', '#include <common>\nvarying vec3 vRoadW;')
       .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRoadW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
     sh.fragmentShader = sh.fragmentShader
       .replace('#include <common>', `#include <common>
-        varying vec3 vRoadW; uniform float uTime; uniform float uRain;
+        varying vec3 vRoadW; uniform float uTime; uniform float uRain; uniform vec2 uOrigin;
         float rh(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
         vec2 ripple(vec2 p, float t) {
           vec2 g = vec2(0.0);
@@ -1356,7 +1356,7 @@ function buildMaterials(envMap) {
           float near = 1.0 - smoothstep(18.0, 42.0, length(vRoadW - cameraPosition));
           float k = puddle * near * uRain;
           if (k > 0.001) {
-            vec2 g = ripple(vRoadW.xz, uTime) * 0.35 * k;
+            vec2 g = ripple(vRoadW.xz + uOrigin, uTime) * 0.35 * k;   // absolute coordinates: ripples survive re-centring
             normal = normalize(normal + (viewMatrix * vec4(g.x, 0.0, g.y, 0.0)).xyz);
           }
         }`);
@@ -2105,6 +2105,11 @@ const Stream = {
       if (!sync && !urgent && performance.now() - t0 > budgetMs) break;
     }
   },
+  finishJob() {
+    while (this.job) {
+      if (this.job.next().done) { this.jobChunk.ready = true; this.job = null; this.jobChunk = null; this.dirtyLights = true; this.built++; }
+    }
+  },
   rebase(dx, dz) { for (const ch of this.chunks.values()) { ch.group.position.x -= dx; ch.group.position.z -= dz; } this.dirtyLights = true; },
   animate(t) { for (const ch of this.chunks.values()) for (const a of ch.anim) a(t); },
   forEachLight(fn) { for (const ch of this.chunks.values()) if (ch.ready) for (const L of ch.lights) fn(L); },
@@ -2816,7 +2821,9 @@ class Car {
     }
     if (!this.grounded) {
       this.vy -= GRAV * h; this.y += this.vy * h; this.airTime += h;
-      if (!inGap && this.y <= roadY) {
+      const short = !inGap && roadY - this.y > 1.5 && track.jumpAt(this.s - 5);
+      if (short) this.respawn(short.gapEnd + 25, 0, 45);           // fell short of the landing: never snap up the cliff face
+      else if (!inGap && this.y <= roadY) {
         const roadVy = vs * f2.T.y;
         const impact = Math.max(0, roadVy - this.vy);
         this.y = roadY; this.vy = roadVy; this.grounded = true;
@@ -3063,10 +3070,9 @@ class AIDriver {
       this.boostTimer = 1.2 + Math.random() * 1.2; this.boostCool = 6 + Math.random() * 8 - (gap < 0 ? 3 : 0);
     } else ctl.boost = false;
     // unstick
-    if (Math.abs(c.speed) < 3) this.stuckT += dt; else this.stuckT = 0;
+    const wrongWay = Math.abs(wrapAngle(c.heading - f.heading)) > 1.9 && Math.abs(c.speed) < 20;
+    if (Math.abs(c.speed) < 3 || wrongWay) this.stuckT += dt * (wrongWay ? 2 : 1); else this.stuckT = 0;
     if (this.stuckT > 2.5) { c.respawn(c.s, clamp(c.d, -4, 4), 12); this.stuckT = 0; }
-    const rel = Math.abs(wrapAngle(c.heading - f.heading));
-    if (rel > 1.9 && Math.abs(c.speed) < 20) { this.stuckT += dt * 2; }
   }
 }
 const _aiFrame = new Frame(), _aiFrame2 = new Frame();
@@ -3255,13 +3261,18 @@ class Streaks {
     this.geo.instanceCount = this.dynBase + nDyn;
     for (let i = this.nStatic; i < this.dynBase; i++) { this.a.color.setXYZ(i, 0, 0, 0); this.a.normal.setXYZ(i, 0, 1, 0); }
     Object.values(this.a).forEach((at) => { at.needsUpdate = true; });
+    this.fullDirty = true;
   }
   commitDynamic(nDyn) {
     this.nDyn = nDyn;
     this.geo.instanceCount = this.dynBase + nDyn;
     for (const at of Object.values(this.a)) {
-      at.clearUpdateRanges(); at.addUpdateRange(this.dynBase * at.itemSize, Math.max(1, nDyn) * at.itemSize); at.needsUpdate = true;
+      at.clearUpdateRanges();
+      // after commit() the whole buffer must go up (no ranges = full upload); otherwise just the dynamic slots
+      if (!this.fullDirty) at.addUpdateRange(this.dynBase * at.itemSize, Math.max(1, nDyn) * at.itemSize);
+      at.needsUpdate = true;
     }
+    this.fullDirty = false;
   }
 }
 
@@ -3666,6 +3677,8 @@ function updateFX(dt, cars, camPos) {
           wheelPos(car, k % 2 ? 1 : -1, _v1);
           sp.emit(_v1.x, _v1.y, _v1.z, car.vel.x * 0.8 + (Math.random() - 0.5) * 10, 2 + Math.random() * 5, car.vel.z * 0.8 + (Math.random() - 0.5) * 10, 0.4, SPARK_HOT, car.pos.y);
         }
+      } else if (e.type === 'respawn') {
+        FX.trails.reset(ci * 2, car.pos); FX.trails.reset(ci * 2 + 1, car.pos);   // car.pos is already the new position here
       } else if ((e.type === 'boost' || e.type === 'miniTurbo' || e.type === 'pad') && car.isPlayer) {
         FX.ring.fire(car, e.type === 'miniTurbo' ? DRIFT_COLS[Math.min(e.tier - 1, 2)] : new THREE.Color(C.cyan));
       }
@@ -4094,7 +4107,8 @@ const Input = {
   touch: { left: false, right: false, brake: false, drift: false, boost: false },
   steer: 0, throttle: 0, brake: 0, drift: false, boost: false, gamepad: false,
   init() {
-    const block = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab']);
+    // Enter too: a menu button keeps focus after a mouse click and would also fire its native click
+    const block = new Set(['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Space', 'Tab', 'Enter', 'NumpadEnter']);
     addEventListener('keydown', (e) => {
       if (block.has(e.code)) e.preventDefault();
       if (!e.repeat) this.edges.add(e.code);
@@ -4434,7 +4448,8 @@ const HUD = {
   },
   update(p, rank, dt) {
     const e = this.el;
-    if (this.last.rank !== rank) {
+    if (this.last.rankN !== rank) {
+      this.last.rankN = rank;
       e.pos.classList.remove('pop'); void e.pos.offsetWidth; e.pos.classList.add('pop');
       this.set('rank', e.pos, String(rank)); this.set('suf', e.suf, ordinal(rank)); this.set('tot', e.tot, '/' + cars.length);
     }
@@ -4736,7 +4751,12 @@ function setSeed(seed) {
 }
 function copyLink(btn) {
   const url = shareLink();
-  const done = (ok) => { if (!btn) return; const t = btn.textContent; btn.textContent = ok ? 'LINK COPIED' : 'SEED ' + SEED; setTimeout(() => { btn.textContent = t; }, 1600); };
+  const done = (ok) => {
+    if (!btn) return;
+    if (btn.dataset.label === undefined) btn.dataset.label = btn.textContent;
+    btn.textContent = ok ? 'LINK COPIED' : 'SEED ' + SEED;
+    clearTimeout(btn._t); btn._t = setTimeout(() => { btn.textContent = btn.dataset.label; }, 1600);
+  };
   const fallback = () => {
     try {
       const ta = document.createElement('textarea'); ta.value = url; ta.style.position = 'fixed'; ta.style.opacity = '0';
@@ -4828,7 +4848,10 @@ function startRace() {
   setStartLights(0, false);
   HUD.last = {};
   if (audio.ok) audio.music.setLevel(0);
-  const lbl = HUD.el.cam; lbl.textContent = CAM_LABEL[Cam.mode]; lbl.classList.add('show'); setTimeout(() => lbl.classList.remove('show'), 1800);
+  HUD.el.delta.textContent = ''; HUD.el.delta.className = '';
+  Cam.shot = -1;
+  const lbl = HUD.el.cam; lbl.textContent = CAM_LABEL[Cam.mode]; lbl.classList.add('show');
+  clearTimeout(lbl._t); lbl._t = setTimeout(() => lbl.classList.remove('show'), 1800);
 }
 
 function standings() {
@@ -4943,7 +4966,6 @@ function handleCarEvents() {
           break;
         case 'driftStart': if (isP) audio.chirp(); break;
         case 'respawn':
-          FX.trails.reset(cars.indexOf(car) * 2, car.pos); FX.trails.reset(cars.indexOf(car) * 2 + 1, car.pos);
           if (isP && game.state === 'race') HUD.sub('RESET', 'glow-c');
           break;
         case 'km':
@@ -4966,7 +4988,6 @@ function handleCarEvents() {
           break;
       }
     }
-    car.events.length = 0;
   }
 }
 
@@ -5112,6 +5133,7 @@ function rebaseWorld() {
   const cx = camera.position.x, cz = camera.position.z;
   if (Math.abs(cx) < REBASE_AT && Math.abs(cz) < REBASE_AT) return;
   const dx = Math.round(cx / 44) * 44, dz = Math.round(cz / 44) * 44;   // multiple of the ground grid
+  Stream.finishJob();          // a half-built chunk must not straddle the shift
   const sh = (v) => { v.x -= dx; v.z -= dz; };
   track.rebase(dx, dz); Stream.rebase(dx, dz);
   for (const c of cars) { sh(c.pos); sh(c.prevPos); sh(c.mesh.root.position); }
@@ -5151,6 +5173,7 @@ function updateWorld(rawDt, dt) {
   FX.dust.update(camera.position, Cam.vel, _v1, (smoothstep(0.65, 1.1, sN) * 0.22 + (boost ? 0.3 : 0) + (game.state === 'race' ? smoothstep(0.35, 0.9, focus.slipstream) * 0.25 : 0)) * (game.state === 'title' ? 0.3 : 1));
   FX.splash.update(dt, focus.s, U.uTime.value, outside, 90 * outside);
   updateFX(dt, cars, camera.position);
+  for (const c of cars) c.events.length = 0;       // after both the game logic and the effects have seen them
   updateLampLights(focus.s);
   // post FX intensities
   const fu = finalPass.uniforms;
