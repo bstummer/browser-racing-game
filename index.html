@@ -100,6 +100,7 @@ button { font-family: var(--font); }
 #drift i.t1 { background: #19f0ff; box-shadow: 0 0 12px #19f0ff; border-color: #19f0ff; }
 #drift i.t2 { background: #ff2a8a; box-shadow: 0 0 14px #ff2a8a; border-color: #ff2a8a; }
 #drift i.t3 { background: #e6ccff; box-shadow: 0 0 18px #b98cff; border-color: #fff; }
+#fade { position: fixed; inset: 0; background: #05020f; pointer-events: none; z-index: 20; opacity: 0; }
 #cinebars { position: fixed; inset: 0; pointer-events: none; z-index: 6; }
 #cinebars div { position: absolute; left: 0; right: 0; height: 0; background: #000; transition: height .8s cubic-bezier(.2,.8,.2,1); }
 #cinebars div:first-child { top: 0; } #cinebars div:last-child { bottom: 0; }
@@ -212,6 +213,7 @@ body.touch #speedo { transform: scale(.62); transform-origin: right bottom; righ
 <canvas id="game"></canvas>
 <div id="flash"></div>
 <div id="cinebars"><div></div><div></div></div>
+<div id="fade"></div>
 
 <div id="loading"><div>BUILDING NEON CITY</div><div class="bar"><i></i></div></div>
 
@@ -4181,7 +4183,13 @@ function setStartLights(n, green) {
   });
 }
 
+function fadeIn(ms = 650) {
+  const f = $('fade');
+  f.style.transition = 'none'; f.style.opacity = '1'; void f.offsetWidth;
+  f.style.transition = `opacity ${ms}ms ease-out`; f.style.opacity = '0';
+}
 function toTitle() {
+  fadeIn(900);
   game.state = 'title'; game.paused = false; game.timeScale = 1;
   $('cinebars').classList.remove('on');
   $('title').classList.remove('hidden'); $('hud').classList.add('hidden'); $('results').classList.add('hidden'); $('pause').classList.add('hidden');
@@ -4200,6 +4208,7 @@ function toTitle() {
 }
 
 function startRace() {
+  fadeIn(550);
   game.state = 'countdown'; game.countT = 0; game.raceTime = 0; game.timeScale = 1; game.paused = false;
   $('cinebars').classList.remove('on');
   game.countStep = 0; game.thrPressT = -1; game.finalLapShown = false; game.finishReal = 0; game.resultsShown = false; game.newRecord = false;

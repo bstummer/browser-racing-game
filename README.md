@@ -37,7 +37,7 @@ On phones and tablets, touch buttons appear and the car accelerates automaticall
 - **Speed feel:** the FOV opens up with speed and kicks on boost. There's camera shake and road buzz, rain that stretches into streaks relative to the car, warp-dust lines, radial blur and chromatic aberration near top speed, and dense trackside pylons, lamps and arches for parallax.
 - **Look:** a wet asphalt shader (puddle roughness plus a neon environment map), instanced reflection streaks under every light, bloom, fog, holographic billboards, a procedural city with LOD-filtered windows, light trails, tyre smoke, spray, rain splashes, lightning and a slow-motion finish.
 - **Audio:** Web Audio synthesis for everything: a multi-oscillator engine with gear shifts and a rev limiter, wind, tyre squeal, scrape, boost whoosh, impacts, a Doppler-shifted rival engine, thunder, reverb in the tunnel, and a sidechained 122 BPM synthwave track that intensifies on the final lap.
-- **Performance:** there's a HIGH/LOW preset (MSAA, bloom resolution, particle counts, pooled lamp lights). An adaptive resolution scaler aims for 60 fps. Static geometry is chunked or instanced, and a race frame is roughly 100–150 draw calls.
+- **Performance:** there's a HIGH/LOW preset (MSAA, bloom resolution, particle counts, pooled lamp lights). An adaptive resolution scaler aims for 60 fps. Static geometry is chunked or instanced, and a race frame is roughly 100–190 draw calls. Game logic costs about 0.5 ms of CPU per frame; press F to see FPS, resolution scale, draw calls and CPU time.
 
 Best lap, graphics preset, camera and mute state are stored in `localStorage`.
 
