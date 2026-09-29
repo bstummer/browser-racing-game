@@ -1884,6 +1884,20 @@ function* buildChunk(ch) {
   if (holo.pos.length) { const hm = add(holo.build(), MAT.holo, 4); void hm; }
 }
 
+// footprint overlap test for city blocks (separating axes of two convex quads, with a margin)
+function quadsOverlap(A, B, margin) {
+  for (const Q of [A, B]) for (let i = 0; i < 4; i++) {
+    const [ax, az] = Q[i], [bx, bz] = Q[(i + 1) % 4];
+    const nx = bz - az, nz = -(bx - ax), nl = Math.hypot(nx, nz) || 1;
+    let minA = 1e9, maxA = -1e9, minB = 1e9, maxB = -1e9;
+    for (const [x, z] of A) { const d = (x * nx + z * nz) / nl; minA = Math.min(minA, d); maxA = Math.max(maxA, d); }
+    for (const [x, z] of B) { const d = (x * nx + z * nz) / nl; minB = Math.min(minB, d); maxB = Math.max(maxB, d); }
+    if (maxA + margin < minB || maxB + margin < minA) return false;
+  }
+  return true;
+}
+const CITY_STATS = { placed: 0, rejected: 0 };
+
 function* buildChunkCity(ch, r, holo, s0, s1) {
   const pos = [], nor = [], uv = [], inf = [], idx = [];
   const neon = [];
@@ -1918,12 +1932,25 @@ function* buildChunkCity(ch, r, holo, s0, s1) {
       });
     }
   }
-  const addBox = (cx, cz, yaw, w, dpt, y0, y1, info) => {
+  const boxCorners = (cx, cz, yaw, w, dpt) => {
     const c = Math.cos(yaw), sn = Math.sin(yaw);
     // local x along the road, local z across it
     const corner = (lx, lz) => [cx + lx * c + lz * sn, cz - lx * sn + lz * c];
     // counter-clockwise seen from above, so every wall (and the roof) faces outward
-    const P = [corner(-w / 2, -dpt / 2), corner(w / 2, -dpt / 2), corner(w / 2, dpt / 2), corner(-w / 2, dpt / 2)];
+    return [corner(-w / 2, -dpt / 2), corner(w / 2, -dpt / 2), corner(w / 2, dpt / 2), corner(-w / 2, dpt / 2)];
+  };
+  // footprints (absolute coordinates) of this chunk and its built neighbours: blocks never overlap,
+  // or their nearly coplanar walls would z-fight and the windows would flicker
+  ch.foot = [];
+  const others = [];
+  for (const o of Stream.chunks.values()) if (o !== ch && Math.abs(o.k - ch.k) <= 3 && o.foot) others.push(o.foot);
+  const blocked = (PA) => {
+    for (const q of ch.foot) if (quadsOverlap(PA, q, 3)) return true;
+    for (const list of others) for (const q of list) if (quadsOverlap(PA, q, 3)) return true;
+    return false;
+  };
+  const addBox = (cx, cz, yaw, w, dpt, y0, y1, info) => {
+    const P = boxCorners(cx, cz, yaw, w, dpt);
     for (let q = 0; q < 4; q++) {
       const [ax, az] = P[q], [bx, bz] = P[(q + 1) % 4];
       const ex = bx - ax, ez = bz - az, el = Math.hypot(ex, ez);
@@ -1950,7 +1977,7 @@ function* buildChunkCity(ch, r, holo, s0, s1) {
     for (const side of [-1, 1]) {
       let lat = RW + (tun ? 14 : elevated ? 26 : 14) + r() * 8;
       while (lat < 330) {
-        const w = 14 + r() * 18, dpt = 14 + r() * 18;
+        let w = 14 + r() * 18, dpt = 14 + r() * 18;
         const cl = lat + dpt / 2;
         const cx = f.p.x + _cx.x * side * cl, cz = f.p.z + _cx.z * side * cl;
         lat += dpt + 6 + r() * 16;
@@ -1962,6 +1989,13 @@ function* buildChunkCity(ch, r, holo, s0, s1) {
         let h = closeness < 80 ? 16 + Math.pow(r(), 1.5) * 55 : 24 + Math.pow(r(), 2.2) * 190;
         if (r() < 0.03 && closeness > 140) h = 230 + r() * 160;
         const info = [r() * 100, r() < 0.55 ? 0 : r() < 0.6 ? 1 : 2, 0.12 + r() * 0.45];
+        let PA = boxCorners(cx, cz, f.heading, w, dpt).map(([x, z]) => [x + O.x, z + O.z]);
+        if (blocked(PA)) {                                   // no room: try a slimmer tower on the same spot
+          w *= 0.55; dpt *= 0.55;
+          PA = boxCorners(cx, cz, f.heading, w, dpt).map(([x, z]) => [x + O.x, z + O.z]);
+          if (blocked(PA)) { CITY_STATS.rejected++; continue; }
+        }
+        ch.foot.push(PA); CITY_STATS.placed++;
         const P = addBox(cx, cz, f.heading, w, dpt, GROUND_Y, h, info);
         if (r() < 0.32 && h > 40) {
           const w2 = w * (0.45 + r() * 0.3), d2 = dpt * (0.45 + r() * 0.3), h2 = h + 12 + r() * 60;
@@ -5214,7 +5248,7 @@ async function init() {
   window.__audioRef = () => audio;
   window.__bloomPatched = () => bloomPass.materialHighPassFilter.fragmentShader.includes('bool ok');
   window.__three = () => ({ THREE, renderer, scene, camera });
-  window.__dev = () => ({ headlight, bloomPass, finalPass, FX, MAT, Cam, scene, player, game, Track, track, Stream, cars, buildChunk });
+  window.__dev = () => ({ headlight, bloomPass, finalPass, FX, MAT, Cam, scene, player, game, Track, track, Stream, cars, buildChunk, CITY_STATS, quadsOverlap });
   window.__lightning = () => { LIGHTNING.next = 0; };
   // test hook: output level of the audio graph (rms, peak)
   window.__audioLevel = () => {
