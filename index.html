@@ -391,7 +391,7 @@ const QUALITY = {
   low:  { name: 'LOW',  pr: 1.0, msaa: 0, bloomScale: 0.5, rain: 2600, dust: 260, lights: 0, blur: 5,  smoke: 220, streamMs: 1 },
 };
 let qualityName = storeGet('neonOverdrive.quality', IS_TOUCH ? 'low' : 'high');
-if (!QUALITY[qualityName]) qualityName = 'high';
+if (!Object.hasOwn(QUALITY, qualityName)) qualityName = 'high';
 let QS = QUALITY[qualityName];
 
 const C = {
@@ -424,7 +424,7 @@ const MAX_ANISO = renderer.capabilities.getMaxAnisotropy();
 const scene = new THREE.Scene();
 const FOG_DENSITY = 0.0016;
 scene.fog = new THREE.FogExp2(C.fog, FOG_DENSITY);
-const camera = new THREE.PerspectiveCamera(62, innerWidth / innerHeight, 0.1, 6000);
+const camera = new THREE.PerspectiveCamera(62, Math.max(1, innerWidth) / Math.max(1, innerHeight), 0.1, 6000);
 scene.add(camera);
 
 // uniforms shared by every custom shader
@@ -785,7 +785,7 @@ const TRACK_CAP = 8192;                  // samples kept (power of two)
 const TRACK_MASK = TRACK_CAP - 1;
 const START_S = 300;                     // start line; the road begins 300 m behind it
 const CALM_LEN = 450;                    // calm straight after the start line
-const RACE_DIST = Math.round(clamp(parseFloat(PARAMS.get('dist')) || 8, 1, 50) * 10) * 100;   // metres, in 0.1 km steps
+const RACE_DIST = Math.round(clamp(PARAMS.has('dist') && !Number.isNaN(parseFloat(PARAMS.get('dist'))) ? parseFloat(PARAMS.get('dist')) : 8, 1, 50) * 10) * 100;   // metres, in 0.1 km steps
 const BANK_MAX = 0.22;                   // rad (~12.5°)
 const MIN_R = 95;                        // tightest corner (~215 km/h), always behind a clothoid entry
 const MAX_HEAD = 75 * Math.PI / 180;     // heading limit around +Z: the road always advances, so it can never cross itself
@@ -1593,11 +1593,11 @@ function initWorldTemplates() {
   // shared chunk materials
   const chevTex = MAT.chevronTex.clone(); chevTex.needsUpdate = true; chevTex.wrapS = THREE.RepeatWrapping;
   MAT.chev = new THREE.MeshBasicMaterial({ map: chevTex, transparent: true, blending: THREE.AdditiveBlending, depthWrite: false, side: THREE.DoubleSide });
-  WORLD.animated.push((t) => { chevTex.offset.x = -t * 1.6; });
+  WORLD.animated.push((t) => { chevTex.offset.x = -((t * 1.6) % 1); });
   const padTex = MAT.chevronTex.clone(); padTex.needsUpdate = true; padTex.wrapS = padTex.wrapT = THREE.RepeatWrapping;
   MAT.padMat = new THREE.MeshBasicMaterial({ map: padTex, color: hdr(C.cyan, 2.2), transparent: true, blending: THREE.AdditiveBlending,
     depthWrite: false, polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3 });
-  WORLD.animated.push((t) => { padTex.offset.x = -t * 2.2; });
+  WORLD.animated.push((t) => { padTex.offset.x = -((t * 2.2) % 1); });
   MAT.checker = new THREE.MeshStandardMaterial({ map: MAT.checkerTex, roughness: 0.3, metalness: 0, envMapIntensity: 0.8,
     polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -1 });
   MAT.portal = new THREE.MeshStandardMaterial({ color: 0x100c22, metalness: 0.6, roughness: 0.5, side: THREE.DoubleSide });
@@ -2128,31 +2128,32 @@ const SKY_WRAP = 2400;
 function buildSurroundings() {
   const group = new THREE.Group();
   const r = mulberry32(777);
-  const tr = [];
+  const tr = [], lanes = [];
   for (let lane = 0; lane < 24; lane++) {
     const ang = r() * TAU, y = 70 + r() * 140, len = 2600;
     const dir = [Math.cos(ang), 0, Math.sin(ang)];
     const start = [-dir[0] * len / 2 + (r() - 0.5) * 1200, y, -dir[2] * len / 2 + (r() - 0.5) * 1200];
     const count = 12 + Math.floor(r() * 12), sp = (30 + r() * 40) * (r() < 0.5 ? 1 : -1);
-    for (let c = 0; c < count; c++) tr.push({ p: start, dir, sp, len, ph: r() * len, col: r() });
+    lanes.push({ sp, len });
+    for (let c = 0; c < count; c++) tr.push({ p: start, dir, lane, len, ph: r() * len, col: r() });
   }
   const tp = new Float32Array(tr.length * 3), td = new Float32Array(tr.length * 3), ta = new Float32Array(tr.length * 4);
-  tr.forEach((t, i) => { tp.set(t.p, i * 3); td.set(t.dir, i * 3); ta.set([t.sp, t.len, t.ph, t.col < 0.6 ? 0 : 1], i * 4); });
+  tr.forEach((t, i) => { tp.set(t.p, i * 3); td.set(t.dir, i * 3); ta.set([t.lane, t.len, t.ph, t.col < 0.6 ? 0 : 1], i * 4); });
   const tg = new THREE.BufferGeometry();
   tg.setAttribute('position', new THREE.BufferAttribute(tp, 3));
   tg.setAttribute('aDir', new THREE.BufferAttribute(td, 3));
   tg.setAttribute('aParams', new THREE.BufferAttribute(ta, 4));
   const tm = new THREE.ShaderMaterial({
-    uniforms: { uTime: U.uTime, fogColor: U.fogColor, fogDensity: U.fogDensity, uOff: { value: new THREE.Vector2() } },
+    uniforms: { uLane: { value: new Float32Array(lanes.length) }, fogColor: U.fogColor, fogDensity: U.fogDensity, uOff: { value: new THREE.Vector2() } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */`
-      attribute vec3 aDir; attribute vec4 aParams; uniform float uTime; uniform vec2 uOff;
+      attribute vec3 aDir; attribute vec4 aParams; uniform float uLane[${lanes.length}]; uniform vec2 uOff;
       varying vec3 vCol; varying float vDist;
       const float P = ${SKY_WRAP.toFixed(1)};
       void main() {
         // each flying car keeps a world position (drifting along its lane) and wraps around the camera
         // far out in the fog; it fades out before the wrap and at the ends of its lane, so nothing pops
-        float along = mod(aParams.z + uTime * aParams.x, aParams.y), u = along / aParams.y;
+        float along = mod(aParams.z + uLane[int(aParams.x + 0.5)], aParams.y), u = along / aParams.y;
         vec3 p = position + aDir * along;
         p.xz = cameraPosition.xz + mod(p.xz - cameraPosition.xz - uOff, P) - 0.5 * P;
         vec4 mv = viewMatrix * vec4(p, 1.0);
@@ -2169,6 +2170,8 @@ function buildSurroundings() {
         gl_FragColor = vec4(vCol * a * (1.0 - fogAmount(vDist) * 0.85), 1.0); }`,
   });
   const tpts = new THREE.Points(tg, tm); tpts.frustumCulled = false;
+  // lane travel is wrapped here in double precision, so the float32 shader never sees huge times
+  WORLD.animated.push((t) => { const o = tm.uniforms.uLane.value; lanes.forEach((L, i) => { o[i] = mod(t * L.sp, L.len); }); });
   WORLD.skyTraffic = tpts;                     // lives in world space, not in the snapped group
   const groundMat = new THREE.ShaderMaterial({
     uniforms: { fogColor: U.fogColor, fogDensity: U.fogDensity, uTime: U.uTime, uOrigin: U.uOrigin },
@@ -2603,7 +2606,7 @@ class Car {
   reset(s, d) {
     const f = track.sample(s, this.frame);
     this.s = f.s; this.d = d;
-    this.heading = f.heading; this.travel = f.heading; this.speed = 0;
+    this.heading = f.heading; this.travel = f.heading; this.speed = 0; this.velSkip = true; this.vel.set(0, 0, 0);
     this.y = f.p.y + f.R.y * d; this.vy = 0; this.grounded = true; this.airTime = 0;
     this.steer = 0; this.gear = 1; this.rpm = 1000; this.shiftTimer = 0; this.limiter = 0;
     this.drifting = false; this.driftDir = 0; this.driftTime = 0; this.slip = 0; this.exitT = 0;
@@ -2871,7 +2874,7 @@ class Car {
     }
     if (racing && this.isPlayer && !this.finished) {
       const km = Math.floor(this.progress / 1000);
-      if (km > this.splitKm) { this.splitKm = km; this.events.push({ type: 'km', km }); }
+      if (km > this.splitKm) { this.splitKm = km; this.events.push({ type: 'km', km, t: game.raceTime + game.subT + h }); }
     }
     // suspension spring (visual)
     this.suspV += (-this.susp * 140 - this.suspV * 12) * h;
@@ -2884,7 +2887,7 @@ class Car {
     const f = track.sample(s, this.frame);
     this.s = f.s; this.d = d; this.heading = f.heading; this.travel = f.heading;
     this.speed = speed; this.y = f.p.y + f.R.y * d; this.vy = 0; this.grounded = true; this.drifting = false;
-    this.pushV = 0; this.ghost = 1.5; this.events.push({ type: 'respawn' }); this.stats.respawns++;
+    this.pushV = 0; this.ghost = 1.5; this.velSkip = true; this.events.push({ type: 'respawn' }); this.stats.respawns++;
   }
 
   // visual transform (called once per rendered frame)
@@ -2892,7 +2895,8 @@ class Car {
     const f = track.sample(this.s, this.vframe);
     this.prevPos.copy(this.pos);
     this.pos.set(f.p.x + f.R.x * this.d, this.y, f.p.z + f.R.z * this.d);
-    if (dt > 0) this.vel.subVectors(this.pos, this.prevPos).divideScalar(Math.max(dt, 1e-4));
+    if (dt > 0 && !this.velSkip) this.vel.subVectors(this.pos, this.prevPos).divideScalar(Math.max(dt, 1e-4));
+    if (dt > 0) this.velSkip = false;
     const targetUp = this.grounded ? f.N : UP;
     this.up.lerp(targetUp, 1 - Math.exp(-(this.grounded ? 14 : 2) * dt)).normalize();
     if (dt === 0) this.up.copy(f.N);
@@ -3105,6 +3109,7 @@ const AI_GAP = 3.8;                  // lateral room kept to a car alongside
 // GPU rain: drops are fixed in world space inside a box that wraps around
 // the camera; each is stretched along its velocity relative to the car,
 // so at speed the rain turns into horizontal streaks.
+const RAIN_FALL = [3.0, -26.0, 1.5], RAIN_SPD = [0.8, 0.87, 0.94, 1.0, 1.06, 1.13, 1.2];
 class Rain {
   constructor(max) {
     this.max = max;
@@ -3118,17 +3123,19 @@ class Rain {
     g.setAttribute('position', new THREE.BufferAttribute(seeds, 3));
     g.setAttribute('aEnd', new THREE.BufferAttribute(ends, 1));
     this.mat = new THREE.ShaderMaterial({
-      uniforms: { uTime: U.uTime, uCam: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
+      uniforms: { uSpd: { value: RAIN_SPD }, uFallOff: { value: RAIN_SPD.map(() => new THREE.Vector3()) },
+        uCam: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
         uBox: { value: new THREE.Vector3(64, 34, 64) }, uAlpha: { value: 1 }, uOff: { value: new THREE.Vector3() } },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: /* glsl */`
-        attribute float aEnd; uniform float uTime; uniform vec3 uCam; uniform vec3 uVel; uniform vec3 uBox; uniform float uAlpha; uniform vec3 uOff;
+        attribute float aEnd; uniform float uSpd[${RAIN_SPD.length}]; uniform vec3 uFallOff[${RAIN_SPD.length}]; uniform vec3 uCam; uniform vec3 uVel; uniform vec3 uBox; uniform float uAlpha; uniform vec3 uOff;
+        const vec3 RAIN_FALL = vec3(${RAIN_FALL.join(', ')});
         varying float vA;
         void main() {
           vec3 seed = position;
-          float spd = 0.8 + 0.4 * fract(seed.x * 91.7);
-          vec3 fall = vec3(3.0, -26.0, 1.5) * spd;
-          vec3 p = seed * uBox + fall * uTime;
+          int k = int(fract(seed.x * 91.7) * ${RAIN_SPD.length}.0);
+          vec3 fall = RAIN_FALL * uSpd[k];
+          vec3 p = seed * uBox + uFallOff[k];
           vec3 rel = mod(p - uCam - uOff, uBox) - uBox * 0.5;   // uOff: floating-origin shift, so re-centring never reshuffles the drops
           vec3 rv = fall - uVel;
           float rl = length(rv);
@@ -3147,6 +3154,9 @@ class Rain {
   }
   setCount(n) { this.mesh.geometry.setDrawRange(0, Math.min(n, this.max) * 2); }
   update(camPos, vel, alpha) {
+    // each speed class falls fall*spd*t; wrapped into the box here in double precision
+    const u = this.mat.uniforms, b = u.uBox.value, t = U.uTime.value;
+    RAIN_SPD.forEach((k, i) => u.uFallOff.value[i].set(mod(RAIN_FALL[0] * k * t, b.x), mod(RAIN_FALL[1] * k * t, b.y), mod(RAIN_FALL[2] * k * t, b.z)));
     this.mat.uniforms.uCam.value.copy(camPos); this.mat.uniforms.uVel.value.copy(vel);
     this.mat.uniforms.uAlpha.value = alpha; this.mesh.visible = alpha > 0.01;
   }
@@ -4263,7 +4273,7 @@ const Cam = {
   mode: storeGet('neonOverdrive.cam', 'chase'), pos: new THREE.Vector3(0, 10, 0), offset: new THREE.Vector3(0, 3, -8),
   look: new THREE.Vector3(), up: new THREE.Vector3(0, 1, 0), vel: new THREE.Vector3(), prev: new THREE.Vector3(),
   fov: 64, fovKick: 0, fovKickV: 0, trauma: 0, roll: 0, yaw: 0, shotT: 0, shot: 0, shotLen: 7, cineS: 0, cineSide: 1, cineH: 2,
-  cinePos: new THREE.Vector3(), orbitA: 0, target: null, lastOrbit: 0,
+  cinePos: new THREE.Vector3(), orbitA: 0, target: null, lastOrbit: 0, cut: true,
 };
 if (!CAM_MODES.includes(Cam.mode)) Cam.mode = 'chase';
 const _camF = new Frame();
@@ -4400,12 +4410,15 @@ function updateCamera(rawDt, dt, car) {
   camera.lookAt(Cam.look);
   camera.rotateZ(Cam.roll + camNoise(t * 7, 4) * tr * 0.04);
   // camera velocity (game time) for rain / dust streaks
-  if (dt > 0) { Cam.vel.subVectors(camera.position, Cam.prev).divideScalar(dt); if (Cam.vel.length() > 200) Cam.vel.setLength(200); }
+  // a cut (new shot, mode switch, respawn snap) is not motion: keep the last velocity instead of a one-frame spike
+  const jump = camera.position.distanceTo(Cam.prev);
+  if (dt > 0 && !Cam.cut && jump < 25) { Cam.vel.subVectors(camera.position, Cam.prev).divideScalar(dt); if (Cam.vel.length() > 200) Cam.vel.setLength(200); }
+  Cam.cut = false;
   Cam.prev.copy(camera.position);
 }
 
 function newCineShot(tgt, title) {
-  Cam.shotT = 0;
+  Cam.shotT = 0; Cam.cut = true;
   const options = title ? [0, 1, 2, 3, 4, 0, 3] : [0, 0, 2, 4, 1];
   let shot = options[Math.floor(Math.random() * options.length)];
   if (shot === Cam.shot && Math.random() < 0.7) shot = options[(options.indexOf(shot) + 1) % options.length];
@@ -4719,7 +4732,7 @@ function buildComposer() {
   resize();
 }
 function resize() {
-  const w = innerWidth, h = innerHeight;
+  const w = Math.max(1, innerWidth), h = Math.max(1, innerHeight);
   const pr = Math.min(window.devicePixelRatio || 1, QS.pr) * dynScale;
   renderer.setPixelRatio(pr);
   renderer.setSize(w, h, false);
@@ -4841,7 +4854,7 @@ function toTitle() {
   cars.forEach((c, i) => { FX.trails.reset(i * 2, c.pos); FX.trails.reset(i * 2 + 1, c.pos); });
   drivers.forEach((d) => { d.offset = d.car.d; });
   playerAI.offset = player.d;
-  Cam.shot = -1; Cam.target = cars[0];
+  Cam.shot = -1; Cam.cut = true; Cam.target = cars[0];
   streamWorld(true);
   setStartLights(0, true);
   if (audio.ok) audio.music.setLevel(0);
@@ -4872,7 +4885,7 @@ function startRace() {
   HUD.last = {};
   if (audio.ok) audio.music.setLevel(0);
   HUD.el.delta.textContent = ''; HUD.el.delta.className = ''; HUD.el.wrong.classList.add('hidden');
-  Cam.shot = -1;
+  Cam.shot = -1; Cam.cut = true;
   const lbl = HUD.el.cam; lbl.textContent = CAM_LABEL[Cam.mode]; lbl.classList.add('show');
   clearTimeout(lbl._t); lbl._t = setTimeout(() => lbl.classList.remove('show'), 1800);
 }
@@ -4980,7 +4993,7 @@ function showResults() {
   $('res-best').innerHTML = bestHtml;
   $('results').classList.remove('hidden');
   Menu.open($('results'));
-  Cam.shot = -1;
+  Cam.shot = -1; Cam.cut = true;
   if (audio.ok) { audio.music.setLevel(0); audio.chime(me.pos === 1 ? [72, 76, 79, 84, 88] : [69, 72, 76, 81], 0.1, 0.12); }
   window.__raceResult = { place: me.pos, time: me.time, seed: SEED, order: rows.map((r) => r.c.name), record: Record.best ? Record.best.t : 0 };
 }
@@ -5020,11 +5033,11 @@ function handleCarEvents() {
           break;
         case 'km':
           if (isP && game.state === 'race') {
-            car.splits[e.km - 1] = game.raceTime;
+            car.splits[e.km - 1] = e.t;
             const left = Math.round((track.finishS - car.s) / 1000);
             const ref = Record.best && Record.best.splits ? Record.best.splits[e.km - 1] : 0;
             const del = HUD.el.delta;
-            if (ref > 0) { const d = game.raceTime - ref; del.textContent = (d <= 0 ? '−' : '+') + Math.abs(d).toFixed(2) + ' @ ' + e.km + ' KM'; del.className = d <= 0 ? 'neg' : 'pos'; }
+            if (ref > 0) { const d = e.t - ref; del.textContent = (d <= 0 ? '−' : '+') + Math.abs(d).toFixed(2) + ' @ ' + e.km + ' KM'; del.className = d <= 0 ? 'neg' : 'pos'; }
             if (left === 1 && !game.finalLapShown) {
               game.finalLapShown = true; HUD.msg('FINAL KM', 'glow-p'); if (audio.ok) audio.music.setLevel(2);
             } else if (left >= 2) HUD.sub(left + ' KM TO GO', 'glow-c');
@@ -5236,7 +5249,7 @@ function updateWorld(rawDt, dt) {
   // drops only settle on the lens in the rain, and get blown off at speed
   const lensT = outside * (Cam.mode === 'hood' && game.state === 'race' ? 0.5 : 1) * (1 - smoothstep(0.25, 0.8, sN) * 0.8);
   fu.uLens.value = damp(fu.uLens.value, lensT, 1.5, rawDt);
-  fu.uAspect.value = innerWidth / innerHeight;
+  fu.uAspect.value = Math.max(1, innerWidth) / Math.max(1, innerHeight);
   bloomPass.strength = damp(bloomPass.strength, 0.55 + top * 0.3 + (boost ? 0.2 : 0), 4, rawDt);
   // audio
   if (audio.ok) {
@@ -5306,7 +5319,7 @@ function frame(now) {
     if (Input.action('pause')) pauseGame(!game.paused);
     if (!game.paused && Input.action('camera')) {
       Cam.mode = CAM_MODES[(CAM_MODES.indexOf(Cam.mode) + 1) % CAM_MODES.length];
-      storeSet('neonOverdrive.cam', Cam.mode); Cam.shot = -1;
+      storeSet('neonOverdrive.cam', Cam.mode); Cam.shot = -1; Cam.cut = true;
       const lbl = HUD.el.cam; lbl.textContent = CAM_LABEL[Cam.mode]; lbl.classList.add('show');
       clearTimeout(lbl._t); lbl._t = setTimeout(() => lbl.classList.remove('show'), 1500);
     }
@@ -5423,7 +5436,7 @@ async function init() {
     });
     cars.forEach((c, i) => { c.upd(0); FX.trails.reset(i * 2, c.pos); FX.trails.reset(i * 2 + 1, c.pos); });
     drivers.forEach((d) => { d.offset = d.car.d; });
-    if (camMode) { Cam.mode = camMode; Cam.shot = -1; }
+    if (camMode) { Cam.mode = camMode; Cam.shot = -1; Cam.cut = true; }
     Cam.yaw = player.heading; Cam.lookYaw = undefined; Cam.offset.set(-Math.sin(player.heading) * 7, 2.2, -Math.cos(player.heading) * 7);
     streamWorld(true);
     return { start: START_S, finish: track.finishS - START_S, features: track.features.map((f) => ({ type: f.type, s0: Math.round(f.s0 - START_S), s1: Math.round(f.s1 - START_S) })) };
