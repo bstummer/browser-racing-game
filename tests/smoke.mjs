@@ -1,6 +1,6 @@
 // Headless smoke test: loads the game, fails on console errors, optionally waits for a full race.
 // Usage: node tests/smoke.mjs [query] [outDir] [maxSeconds]
-//   e.g. node tests/smoke.mjs "?autotest&laps=3&norender&simspeed=4" shots 300
+//   e.g. node tests/smoke.mjs "?autotest&dist=8&seed=TEST42&norender&simspeed=4" shots 300
 // Env: PORT (default 8123), THREE_DIR (serve three.js locally), SHOTS="5,10" (screenshot times), VERBOSE=1
 import fs from 'fs';
 const { chromium } = await import(process.env.PLAYWRIGHT_PATH || 'playwright');
@@ -67,8 +67,8 @@ while ((Date.now() - start) / 1000 < maxSec) {
 }
 const final = await page.evaluate(() => (window.__dbg ? window.__dbg() : null));
 if (final) {
-  console.log('state', final.state, 'raceTime', final.t);
-  for (const c of final.cars) console.log(`  ${c.n.padEnd(5)} lap ${c.lap} best ${c.best}s walls ${c.st.walls} respawns ${c.st.respawns} bumps ${c.st.bumps} (side ${c.st.side || 0} rear ${c.st.rear || 0} early ${c.st.early || 0}) air ${c.st.air.toFixed(2)}s`);
+  console.log('state', final.state, 'raceTime', final.t, 'seed', final.seed, 'chunks', final.chunks, 'built', final.built, 'origin', final.origin.join(','));
+  for (const c of final.cars) console.log(`  ${c.n.padEnd(5)} dist ${c.prog}m finish ${c.ft}s walls ${c.st.walls} respawns ${c.st.respawns} bumps ${c.st.bumps} (side ${c.st.side || 0} rear ${c.st.rear || 0} early ${c.st.early || 0}) air ${c.st.air.toFixed(2)}s`);
 }
 if (expectResult && !result) { console.log('FAIL: race did not reach the results screen'); await finish(1); }
 await finish(errors.length ? 1 : 0);

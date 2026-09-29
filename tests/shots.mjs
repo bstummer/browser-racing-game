@@ -1,10 +1,10 @@
-// Screenshot tour: starts an autopilot race, teleports the pack around the track and captures frames.
+// Screenshot tour: starts an autopilot race, teleports the pack along the road (metres past the start) and captures frames.
 // Usage: node tests/shots.mjs outDir "s1:speed:cam,s2:speed:cam,..." [query]
 const { chromium } = await import(process.env.PLAYWRIGHT_PATH || 'playwright');
 import fs from 'fs';
 const outDir = process.argv[2] || 'shots';
 const stops = (process.argv[3] || '300:80').split(',').map((x) => { const [s, v, c] = x.split(':'); return { s: +s, v: +(v || 70), c: c || 'chase' }; });
-const query = process.argv[4] || '?autotest&laps=3';
+const query = process.argv[4] || '?autotest&seed=TEST42';
 const wait = +(process.env.WAIT || 6000);
 fs.mkdirSync(outDir, { recursive: true });
 const browser = await chromium.launch({ args: ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'] });

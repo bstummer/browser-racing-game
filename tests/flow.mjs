@@ -24,9 +24,17 @@ const expect = async (label, want) => {
 };
 const waitState = (s, ms = 30000) => page.waitForFunction((s) => window.__dbg().state === s, s, { timeout: ms, polling: 100 });
 
-await page.goto(`http://localhost:${port}/index.html?norender&laps=1&simspeed=3`);
+await page.goto(`http://localhost:${port}/index.html?norender&dist=1&simspeed=3`);
 await page.waitForFunction(() => window.__gameStarted === true, null, { timeout: 120000 });
 await expect('boot to title', 'title');
+// seed: shown on the title, NEW TRACK rolls a different one and puts it in the URL
+const seed0 = await page.textContent('#seed-val');
+await page.click('[data-act=newtrack]'); await page.waitForTimeout(400);
+const seed1 = await page.textContent('#seed-val');
+const url1 = page.url();
+const seedOk = /^[0-9A-Z]{6}$/.test(seed0) && seed1 !== seed0 && url1.includes('seed=' + seed1);
+console.log(`${seedOk ? 'ok  ' : 'FAIL'} new track seed ${seed0} -> ${seed1} (url ${url1.replace(/^.*\?/, '?')})`); if (!seedOk) failed++;
+await expect('still on title after new track', 'title');
 // quality toggle twice via menu
 const q0 = await page.textContent('#q-label');
 await page.click('[data-act=quality]'); await page.waitForTimeout(300);
@@ -67,9 +75,10 @@ console.log(`${p.v > 20 ? 'ok  ' : 'FAIL'} player moving under keyboard control 
 await page.keyboard.press('Escape'); await page.waitForTimeout(200);
 await page.click('#pause [data-act=restart]'); await page.waitForTimeout(300);
 await expect('pause -> restart', ['countdown', 'race']);
-// jump near the end of the lap and let the autopilot-free player cross the line
+// jump close to the finish gate and let the (keyboard-driven) player cross it
 await waitState('race');
-await page.evaluate(() => window.__teleport(3395, 80));
+const tp = await page.evaluate(() => window.__teleport(700, 80));
+console.log(`ok   teleported, finish at ${tp.finish} m`);
 await waitState('results', 60000);
 await expect('finish -> results', 'results');
 const rows = await page.$$eval('#res-table tr', (r) => r.length);
@@ -83,7 +92,8 @@ await page.keyboard.press('Escape'); await page.waitForTimeout(200);
 await page.click('#pause [data-act=quit]'); await page.waitForTimeout(300);
 await expect('quit to title', 'title');
 const rec = await page.textContent('#rec-time');
-console.log(`ok   track record shown on title: ${rec}`);
+const recOk = /^(\d+:\d\d\.\d{3}|--:--\.---)$/.test(rec);   // teleported runs never set a record
+console.log(`${recOk ? 'ok  ' : 'FAIL'} record for seed ${await page.textContent('#seed-val')} shown on title: ${rec}`); if (!recOk) failed++;
 console.log('errors:', errors.length); errors.forEach((e) => console.log('  ' + e));
 await browser.close();
 process.exit(failed || errors.length ? 1 : 0);
