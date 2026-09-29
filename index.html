@@ -366,7 +366,7 @@ const GEAR_TOP = [0, 22, 38, 54, 70, 88, 120];
 const omegaMax = (v) => OMEGA0 / (1 + Math.abs(v) / OMEGA_V) * clamp(Math.abs(v) / 5, 0, 1);
 
 const QUALITY = {
-  high: { name: 'HIGH', pr: 1.5, msaa: 4, bloomScale: 1.0, rain: 7000, dust: 520, lights: 4, blur: 10, smoke: 420 },
+  high: { name: 'HIGH', pr: 1.25, msaa: 4, bloomScale: 1.0, rain: 7000, dust: 520, lights: 4, blur: 10, smoke: 420 },
   low:  { name: 'LOW',  pr: 1.0, msaa: 0, bloomScale: 0.5, rain: 2600, dust: 260, lights: 0, blur: 5,  smoke: 220 },
 };
 let qualityName = storeGet('neonOverdrive.quality', IS_TOUCH ? 'low' : 'high');
@@ -4143,7 +4143,7 @@ function perfTick(rawDt) {
   if (perf.show) {
     if (!perf.fpsEl) { perf.fpsEl = document.createElement('div'); perf.fpsEl.style.cssText = 'position:fixed;left:8px;bottom:6px;z-index:30;font:700 12px monospace;color:#19f0ff;opacity:.8;pointer-events:none'; document.body.appendChild(perf.fpsEl); }
     const info = renderer.info.render;
-    perf.fpsEl.textContent = `${fps.toFixed(0)} FPS · ${Math.round(dynScale * 100)}% res · ${info.calls} calls · ${(info.triangles / 1000).toFixed(0)}k tris`;
+    perf.fpsEl.textContent = `${fps.toFixed(0)} FPS · ${Math.round(dynScale * 100)}% res · ${info.calls} calls · ${(info.triangles / 1000).toFixed(0)}k tris · cpu ${perf.simMs.toFixed(1)}+${perf.drawMs.toFixed(1)} ms`;
   } else if (perf.fpsEl) { perf.fpsEl.remove(); perf.fpsEl = null; }
   if (NORENDER || document.hidden || game.paused) return;
   if (fps < 50 && dynScale > 0.6) { dynScale = Math.max(0.6, +(dynScale - 0.1).toFixed(2)); resize(); perf.good = 0; }
@@ -4535,6 +4535,7 @@ function updateLightning(dt, tunnelK) {
 let lastT = performance.now();
 function frame(now) {
   requestAnimationFrame(frame);
+  const cpu0 = performance.now();
   let rawDt = (now - lastT) / 1000; lastT = now;
   if (!(rawDt > 0)) rawDt = 1 / 60;
   rawDt = Math.min(rawDt, 0.1);
@@ -4573,7 +4574,11 @@ function frame(now) {
     HUD.update(player, standings().indexOf(player) + 1, rawDt);
   }
   renderer.info.reset();
+  const cpu1 = performance.now();
   if (!NORENDER) composer.render(rawDt);
+  const cpu2 = performance.now();
+  perf.simMs = lerp(perf.simMs || 0, cpu1 - cpu0, 0.05);
+  perf.drawMs = lerp(perf.drawMs || 0, cpu2 - cpu1, 0.05);
   Input.endFrame();
   window.__frames = (window.__frames || 0) + 1;
 }
@@ -4626,7 +4631,7 @@ async function init() {
   const ld = $('loading'); ld.style.opacity = '0'; setTimeout(() => ld.remove(), 700);
   window.__gameStarted = true;
   window.__dbg = () => ({
-    state: game.state, t: +game.raceTime.toFixed(1), fps: +perf.fps.toFixed(1), scale: dynScale,
+    state: game.state, t: +game.raceTime.toFixed(1), fps: +perf.fps.toFixed(1), scale: dynScale, simMs: +(perf.simMs || 0).toFixed(2), drawMs: +(perf.drawMs || 0).toFixed(2),
     calls: renderer.info.render.calls, tris: renderer.info.render.triangles,
     cars: cars.map((c) => ({ n: c.name, lap: c.lap, s: Math.round(c.s), d: +c.d.toFixed(1), v: Math.round(c.speed * 3.6), best: +(c.bestLap === Infinity ? 0 : c.bestLap).toFixed(2), fin: c.finished, st: c.stats })),
   });
