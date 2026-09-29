@@ -92,6 +92,19 @@ button { font-family: var(--font); }
 #flash { position: fixed; inset: 0; pointer-events: none; z-index: 4; opacity: 0;
   background: radial-gradient(ellipse at center, rgba(255,255,255,0) 30%, rgba(255,42,138,.45) 100%); }
 
+#drift { position: absolute; left: 50%; bottom: 17%; transform: translateX(-50%) skewX(-12deg); display: flex; align-items: center; gap: 8px;
+  opacity: 0; transition: opacity .15s; font-weight: 900; letter-spacing: .3em; font-size: 14px; }
+#drift.on { opacity: 1; }
+#drift .dl { margin-right: 6px; color: #fff; text-shadow: 0 0 8px rgba(255,255,255,.6); }
+#drift i { display: block; width: 34px; height: 8px; background: rgba(255,255,255,.12); border: 1px solid rgba(255,255,255,.25); }
+#drift i.t1 { background: #19f0ff; box-shadow: 0 0 12px #19f0ff; border-color: #19f0ff; }
+#drift i.t2 { background: #ff2a8a; box-shadow: 0 0 14px #ff2a8a; border-color: #ff2a8a; }
+#drift i.t3 { background: #e6ccff; box-shadow: 0 0 18px #b98cff; border-color: #fff; }
+#cinebars { position: fixed; inset: 0; pointer-events: none; z-index: 6; }
+#cinebars div { position: absolute; left: 0; right: 0; height: 0; background: #000; transition: height .8s cubic-bezier(.2,.8,.2,1); }
+#cinebars div:first-child { top: 0; } #cinebars div:last-child { bottom: 0; }
+#cinebars.on div { height: 9vh; }
+
 /* ---------- title ---------- */
 #title { position: fixed; inset: 0; z-index: 10; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .letterbox { position: absolute; left: 0; right: 0; height: 10vh; background: #000; z-index: 0; transition: height 1s; }
@@ -119,6 +132,10 @@ button { font-family: var(--font); }
   box-shadow: 0 0 22px rgba(255,42,138,.55), inset 0 0 18px rgba(255,42,138,.25); color: #fff; letter-spacing: .34em; }
 #record { position: relative; margin-top: 2.6vh; font-size: 13px; letter-spacing: .3em; font-weight: 700; opacity: .8; font-style: italic; }
 #record b { color: var(--cyan); margin-left: 10px; font-variant-numeric: tabular-nums; }
+#tip { position: relative; margin-top: 1.6vh; font-size: 12px; letter-spacing: .22em; opacity: .7; font-style: italic; min-height: 1.4em; text-align: center; padding: 0 20px; transition: opacity .5s; }
+#tip b { color: var(--pink); font-weight: 800; }
+#soundhint { position: absolute; top: calc(10vh + 14px); right: 22px; font-size: 11px; letter-spacing: .3em; font-weight: 700; color: var(--cyan);
+  opacity: .75; animation: blink 1.6s infinite; }
 #press { position: absolute; bottom: calc(10vh + 18px); font-size: 12px; letter-spacing: .5em; opacity: .6; animation: blink 1.6s infinite; }
 #panel { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; z-index: 3;
   background: rgba(5,2,18,.8); backdrop-filter: blur(6px); pointer-events: auto; }
@@ -171,7 +188,7 @@ button { font-family: var(--font); }
 body.touch #speedo { transform: scale(.62); transform-origin: right bottom; right: 190px; bottom: 6px; }
 
 @media (max-height: 640px) { #press { display: none; } }
-@media (max-height: 460px) { .logo-sub, .logo-line { display: none; } .letterbox { height: 5vh; } #menu { margin-top: 2vh; } #record { margin-top: 1.5vh; } }
+@media (max-height: 460px) { .logo-sub, .logo-line, #tip { display: none; } .letterbox { height: 5vh; } #menu { margin-top: 2vh; } #record { margin-top: 1.5vh; } }
 @media (max-width: 820px), (max-height: 520px) {
   #pos-num { font-size: 60px; } #pos-suf { font-size: 20px; } #pos-tot { font-size: 16px; }
   #hud-pos { top: 16px; left: 20px; }
@@ -194,6 +211,7 @@ body.touch #speedo { transform: scale(.62); transform-origin: right bottom; righ
 <body>
 <canvas id="game"></canvas>
 <div id="flash"></div>
+<div id="cinebars"><div></div><div></div></div>
 
 <div id="loading"><div>BUILDING NEON CITY</div><div class="bar"><i></i></div></div>
 
@@ -209,6 +227,7 @@ body.touch #speedo { transform: scale(.62); transform-origin: right bottom; righ
   <div id="minimap-wrap"><canvas id="minimap" width="420" height="420"></canvas></div>
   <div id="speedo"><canvas id="gauge" width="600" height="600"></canvas></div>
   <div id="draft" class="glow-c">SLIPSTREAM</div>
+  <div id="drift"><span class="dl">DRIFT</span><i></i><i></i><i></i></div>
   <div id="wrongway" class="hidden">WRONG WAY</div>
   <div id="msg"></div>
   <div id="submsg"></div>
@@ -230,6 +249,8 @@ body.touch #speedo { transform: scale(.62); transform-origin: right bottom; righ
   </div>
   <div id="record">TRACK RECORD <b id="rec-time">--:--.---</b></div>
   <div id="press">PRESS ENTER TO RACE</div>
+  <div id="tip"></div>
+  <div id="soundhint">CLICK OR PRESS ANY KEY FOR SOUND</div>
   <div id="panel" class="hidden"><div class="box">
     <h2>CONTROLS</h2>
     <table>
@@ -961,8 +982,42 @@ function buildMaterials(envMap) {
   road.normal.repeat.set(3, 5);
   MAT.road = new THREE.MeshStandardMaterial({
     map: road.map, roughnessMap: road.rough, normalMap: road.normal, normalScale: new THREE.Vector2(0.1, 0.1),
-    roughness: 1, metalness: 0.0, envMapIntensity: 0.75, color: 0xffffff,
+    roughness: 1, metalness: 0.0, envMapIntensity: 0.6, color: 0xffffff,
   });
+  // raindrop ripples in the puddles: perturb the shading normal near the camera
+  MAT.roadRain = { value: 1 };
+  MAT.road.onBeforeCompile = (sh) => {
+    sh.uniforms.uTime = U.uTime; sh.uniforms.uRain = MAT.roadRain;
+    sh.vertexShader = sh.vertexShader
+      .replace('#include <common>', '#include <common>\nvarying vec3 vRoadW;')
+      .replace('#include <begin_vertex>', '#include <begin_vertex>\nvRoadW = (modelMatrix * vec4(transformed, 1.0)).xyz;');
+    sh.fragmentShader = sh.fragmentShader
+      .replace('#include <common>', `#include <common>
+        varying vec3 vRoadW; uniform float uTime; uniform float uRain;
+        float rh(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+        vec2 ripple(vec2 p, float t) {
+          vec2 g = vec2(0.0);
+          for (int l = 0; l < 2; l++) {
+            vec2 q = p * (l == 0 ? 1.1 : 1.9) + float(l) * 17.3;
+            vec2 c = floor(q); vec2 f = fract(q) - 0.5;
+            vec2 d = f - (vec2(rh(c + 3.1), rh(c + 7.7)) - 0.5) * 0.5;
+            float r = length(d), ph = fract(t * 1.1 + rh(c));
+            float x = (r - ph * 0.42) / 0.045;
+            g += d / max(r, 1e-3) * cos(x * 2.4) * exp(-x * x) * (1.0 - ph);
+          }
+          return g;
+        }`)
+      .replace('#include <normal_fragment_maps>', `#include <normal_fragment_maps>
+        {
+          float puddle = 1.0 - smoothstep(0.1, 0.32, roughnessFactor);
+          float near = 1.0 - smoothstep(18.0, 42.0, length(vRoadW - cameraPosition));
+          float k = puddle * near * uRain;
+          if (k > 0.001) {
+            vec2 g = ripple(vRoadW.xz, uTime) * 0.35 * k;
+            normal = normalize(normal + (viewMatrix * vec4(g.x, 0.0, g.y, 0.0)).xyz);
+          }
+        }`);
+  };
   MAT.barrier = new THREE.MeshStandardMaterial({ color: 0x1b1a33, metalness: 0.75, roughness: 0.32, envMapIntensity: 1.0 });
   MAT.metal = new THREE.MeshStandardMaterial({ color: 0x14132a, metalness: 0.8, roughness: 0.38, envMapIntensity: 0.9 });
   const panel = makePanelTex(); panel.repeat.set(1, 1);
@@ -2008,7 +2063,7 @@ function buildCarMesh(o) {
     blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
   const under = new THREE.Mesh(CAR_SHARED.under, underMat); under.renderOrder = 2; root.add(under);
   const pool = new THREE.Mesh(CAR_SHARED.pool, o.isPlayer ? CAR_SHARED.poolMatPlayer : CAR_SHARED.poolMat); pool.renderOrder = 2; root.add(pool);
-  return { root, body, wheels, pivots, flames, flameMat, paint, under, pool, shadow, lampGeo, tailVerts, braking: false };
+  return { root, body, wheels, pivots, flames, flameMat, paint, under, pool, shadow, lamps, lampGeo, tailVerts, braking: false };
 }
 
 // =====================================================================
@@ -2059,7 +2114,7 @@ class Car {
     const v = this.speed, av = Math.abs(v);
     // steering: faster return to centre
     const back = Math.abs(c.steer) < Math.abs(this.steer) || c.steer * this.steer < 0;
-    this.steer = damp(this.steer, c.steer, back ? 12 : 7, h);
+    this.steer = damp(this.steer, c.steer, back ? 13 : 9, h);
 
     // boost meter
     if (c.boost && !this.boosting && this.boost > 0.04) { this.boosting = true; this.events.push({ type: 'boost' }); }
@@ -2863,21 +2918,22 @@ class Splashes {
       polygonOffset: true, polygonOffsetFactor: -3, polygonOffsetUnits: -3,
       vertexShader: /* glsl */`
         attribute vec3 iPos; attribute vec3 iR; attribute vec3 iF; attribute vec2 iInfo; uniform float uTime;
-        varying vec2 vUv; varying float vAge;
+        varying vec2 vUv; varying float vAge; varying float vNear;
         void main() {
           vUv = uv; float age = (uTime - iInfo.x) / 0.5; vAge = age;
           float s = iInfo.y * (0.25 + clamp(age, 0.0, 1.0) * 1.1);
           vec3 wp = iPos + (iR * position.x + iF * position.y) * s;
+          vNear = smoothstep(2.5, 7.0, distance(iPos, cameraPosition));
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
         }`,
       fragmentShader: /* glsl */`
-        uniform float uAlpha; varying vec2 vUv; varying float vAge;
+        uniform float uAlpha; varying vec2 vUv; varying float vAge; varying float vNear;
         void main() {
           if (vAge < 0.0 || vAge > 1.0) discard;
           float r = length(vUv - 0.5) * 2.0;
           float ring = smoothstep(0.62, 0.8, r) * (1.0 - smoothstep(0.8, 1.0, r));
           float dot0 = (1.0 - smoothstep(0.0, 0.25, r)) * (1.0 - smoothstep(0.0, 0.25, vAge));
-          float a = (ring * (1.0 - vAge) + dot0) * uAlpha;
+          float a = (ring * (1.0 - vAge) + dot0 * 0.6) * uAlpha * vNear;
           gl_FragColor = vec4(vec3(0.55, 0.65, 0.95) * a * 0.9, 1.0);
         }`,
     });
@@ -2901,7 +2957,7 @@ class Splashes {
     this.mesh.visible = alpha > 0.01;
     if (alpha <= 0.01) return;
     this.acc += dt * rate;
-    while (this.acc >= 1) { this.acc -= 1; this.spawn(centerS - 6 + Math.random() * 60, (Math.random() * 2 - 1) * (RW - 0.3), time); }
+    while (this.acc >= 1) { this.acc -= 1; this.spawn(centerS + 3 + Math.random() * 55, (Math.random() * 2 - 1) * (RW - 0.3), time); }
     if (this.dirty) { this.iPos.needsUpdate = this.iR.needsUpdate = this.iF.needsUpdate = this.iInfo.needsUpdate = true; this.dirty = false; }
   }
 }
@@ -2974,7 +3030,7 @@ function updateFX(dt, cars, camPos, player, tunnelK) {
     const launch = car.grounded && car.ctl.throttle > 0.5 && av < 14 && av > 0.5 && game.state === 'race' && game.raceTime < 2.5;
     const smokeK = car.grounded ? Math.max(car.drifting ? 0.55 + slipK * 0.5 : slipK > 0.35 ? slipK * 0.6 : 0, launch ? 0.8 : 0) : 0;
     if (smokeK > 0 && Math.random() < smokeK * dt * 60) {
-      _smokeCol.setRGB(0.32, 0.3, 0.42).lerp(car.accent, 0.18);
+      _smokeCol.setRGB(0.2, 0.19, 0.28).lerp(car.accent, 0.15);
       for (const side of [-1, 1]) {
         wheelPos(car, side, _v1);
         sm.emit(_v1.x, _v1.y + 0.2, _v1.z, car.vel.x * 0.25 + (Math.random() - 0.5) * 3, 0.8 + Math.random() * 1.2,
@@ -2983,11 +3039,11 @@ function updateFX(dt, cars, camPos, player, tunnelK) {
     }
     // rooster-tail spray off the wet asphalt
     if (car.grounded && av > 22 && track.tunnelAt(car.s) < 0.5 && Math.random() < clamp((av - 22) / 50, 0, 1) * dt * 50) {
-      _smokeCol.setRGB(0.36, 0.4, 0.55).lerp(car.accent, 0.12);
+      _smokeCol.setRGB(0.13, 0.15, 0.22).lerp(car.accent, 0.1);
       const side = Math.random() < 0.5 ? -1 : 1;
       wheelPos(car, side, _v1);
-      sm.emit(_v1.x, _v1.y + 0.1, _v1.z, car.vel.x * 0.55 + (Math.random() - 0.5) * 2.5, 1.2 + Math.random() * 1.6,
-        car.vel.z * 0.55 + (Math.random() - 0.5) * 2.5, 0.45 + Math.random() * 0.3, 0.7, 3.4, _smokeCol, 0.22);
+      sm.emit(_v1.x, _v1.y + 0.05, _v1.z, car.vel.x * 0.6 + (Math.random() - 0.5) * 2, 0.8 + Math.random() * 1.2,
+        car.vel.z * 0.6 + (Math.random() - 0.5) * 2, 0.3 + Math.random() * 0.2, 0.6, 2.3, _smokeCol, 0.13);
     }
     // drift sparks (colour = charge tier)
     if (car.drifting && av > 15 && Math.random() < dt * 60) {
@@ -3024,7 +3080,7 @@ function updateFX(dt, cars, camPos, player, tunnelK) {
           sp.emit(_v1.x, _v1.y, _v1.z, _v2.x, _v2.y, _v2.z, 0.3 + Math.random() * 0.5, Math.random() < 0.4 ? SPARK_WHITE : SPARK_HOT, car.pos.y);
         }
       } else if (e.type === 'land' && e.strength > 0.1) {
-        _smokeCol.setRGB(0.35, 0.33, 0.45);
+        _smokeCol.setRGB(0.2, 0.19, 0.28);
         for (let k = 0; k < 10; k++) {
           const a = Math.random() * TAU;
           sm.emit(car.pos.x + Math.cos(a) * 1.5, car.pos.y + 0.2, car.pos.z + Math.sin(a) * 1.5, car.vel.x * 0.3 + Math.cos(a) * 6, 0.5, car.vel.z * 0.3 + Math.sin(a) * 6, 1.1, 1.5, 6, _smokeCol, 0.35);
@@ -3530,8 +3586,23 @@ let touchMode = IS_TOUCH;
 let gestured = false;
 function userGesture() {
   audio.init();
-  if (audio.ok && !gestured) { gestured = true; audio.music.start(); }
+  if (audio.ok && !gestured) { gestured = true; audio.music.start(); const h = $('soundhint'); if (h) h.remove(); }
 }
+const TIPS = [
+  'HOLD <b>DRIFT</b> THROUGH CORNERS TO CHARGE YOUR <b>BOOST</b>',
+  'LONGER SLIDES = BIGGER <b>MINI-TURBO</b> ON RELEASE',
+  'TUCK IN BEHIND A RIVAL TO CATCH THEIR <b>SLIPSTREAM</b>',
+  'HIT THE THROTTLE JUST AS THE LIGHTS GO GREEN FOR A <b>PERFECT START</b>',
+  'THE <b>BOOST PAD</b> BEFORE THE RAMP GUARANTEES THE JUMP',
+  'PRESS <b>C</b> TO SWITCH BETWEEN CHASE, HOOD AND CINEMATIC CAMERAS',
+];
+let tipIdx = 0;
+setInterval(() => {
+  const el = $('tip');
+  if (!el || game.state !== 'title') return;
+  el.style.opacity = '0';
+  setTimeout(() => { el.innerHTML = TIPS[tipIdx++ % TIPS.length]; el.style.opacity = '0.7'; }, 500);
+}, 5000);
 
 // ---------------------------------------------------------------- menus
 const Menu = {
@@ -3606,7 +3677,7 @@ function updateCamera(rawDt, dt, car) {
 
   if (mode === 'chase' || mode === 'countdown') {
     const back = 6.3 + 1.4 * sN + (car.boostActive ? 1.0 : 0) + clamp(car.accel * 0.018, -0.4, 0.7);
-    const height = 1.95 + 0.3 * sN;
+    const height = 2.08 - 0.22 * Math.min(sN, 1.1);
     const targetYaw = car.heading + wrapAngle(car.travel - car.heading) * 0.6;
     Cam.yaw += wrapAngle(targetYaw - Cam.yaw) * (1 - Math.exp(-6.5 * dt));
     const dir = _v1.set(Math.sin(Cam.yaw), 0, Math.cos(Cam.yaw));
@@ -3634,7 +3705,7 @@ function updateCamera(rawDt, dt, car) {
     shake = sN * sN * 0.022 + (car.boostActive ? 0.03 : 0);
     clampCamToTunnel(car);
   } else if (mode === 'hood') {
-    Cam.pos.copy(car.pos).addScaledVector(car.fwd, 1.55).addScaledVector(car.up, 0.9 + car.susp * 0.5);
+    Cam.pos.copy(car.pos).addScaledVector(car.fwd, 1.72).addScaledVector(car.up, 0.9 + car.susp * 0.5);
     Cam.look.copy(Cam.pos).addScaledVector(car.fwd, 20).addScaledVector(car.up, -0.4);
     lookUp = car.up;
     fovT = 66 + 20 * Math.pow(Math.min(sN, 1.25), 1.6) + (car.boostActive ? 6 : 0);
@@ -3688,6 +3759,8 @@ function updateCamera(rawDt, dt, car) {
     Cam.roll = damp(Cam.roll, 0, 3, rawDt);
     shake = 0;
   }
+  // the player's own lamps sit right under the hood camera; hide them there
+  player.mesh.lamps.visible = mode !== 'hood';
   // ---- apply
   Cam.fov = damp(Cam.fov, fovT, mode === 'cine' || mode === 'title' ? 20 : 4, rawDt);
   camera.fov = clamp(Cam.fov + Cam.fovKick, 10, 115);
@@ -3738,6 +3811,7 @@ const HUD = {
       hud: $('hud'), pos: $('pos-num'), suf: $('pos-suf'), tot: $('pos-tot'), lap: $('lap-num'), lapTot: $('lap-tot'),
       cur: $('t-cur'), lastT: $('t-last'), best: $('t-best'), delta: $('t-delta'), msg: $('msg'), sub: $('submsg'),
       draft: $('draft'), wrong: $('wrongway'), cam: $('cam-label'), flash: $('flash'),
+      drift: $('drift'), driftPips: Array.from(document.querySelectorAll('#drift i')),
     };
     this.el.lapTot.textContent = RACE_LAPS;
     this.g = $('gauge').getContext('2d');
@@ -3800,6 +3874,12 @@ const HUD = {
     this.set('lastT', e.lastT, fmtTime(p.lastLap));
     this.set('best', e.best, fmtTime(Math.min(p.bestLap, recordLap || Infinity)));
     e.draft.style.opacity = p.slipstream > 0.35 && game.state === 'race' ? String(clamp((p.slipstream - 0.35) * 2.5, 0, 1)) : '0';
+    const tier = p.drifting ? (p.driftTime > 2.6 ? 3 : p.driftTime > 1.5 ? 2 : p.driftTime > 0.75 ? 1 : 0) : -1;
+    if (tier !== this.last.tier) {
+      this.last.tier = tier;
+      e.drift.classList.toggle('on', tier >= 0);
+      e.driftPips.forEach((pip, i) => { pip.className = tier > i ? 't' + tier : ''; });
+    }
     this.drawGauge(p);
     this.drawMap(p);
   },
@@ -4010,9 +4090,11 @@ function setStartLights(n, green) {
 
 function toTitle() {
   game.state = 'title'; game.paused = false; game.timeScale = 1;
+  $('cinebars').classList.remove('on');
   $('title').classList.remove('hidden'); $('hud').classList.add('hidden'); $('results').classList.add('hidden'); $('pause').classList.add('hidden');
   $('touch').classList.add('hidden'); $('panel').classList.add('hidden');
   $('rec-time').textContent = fmtTime(recordLap);
+  if (!$('tip').innerHTML) $('tip').innerHTML = TIPS[tipIdx++ % TIPS.length];
   Menu.open($('menu'));
   // attract mode: everybody is an AI, spread around the lap
   const order = cars.slice();
@@ -4026,6 +4108,7 @@ function toTitle() {
 
 function startRace() {
   game.state = 'countdown'; game.countT = 0; game.raceTime = 0; game.timeScale = 1; game.paused = false;
+  $('cinebars').classList.remove('on');
   game.countStep = 0; game.thrPressT = -1; game.finalLapShown = false; game.finishReal = 0; game.resultsShown = false; game.newRecord = false;
   $('title').classList.add('hidden'); $('results').classList.add('hidden'); $('pause').classList.add('hidden');
   $('hud').classList.remove('hidden');
@@ -4174,6 +4257,7 @@ function handleCarEvents() {
 
 function playerFinished() {
   game.state = 'finish'; game.finishReal = 0;
+  $('cinebars').classList.add('on');
   const rank = standings().indexOf(player) + 1;
   game.finishRank = rank;
   HUD.msg(rank === 1 ? 'WINNER!' : 'FINISH', rank === 1 ? 'glow-c' : 'glow-p');
@@ -4285,8 +4369,9 @@ function updateWorld(rawDt, dt) {
   const boost = focus.boostActive && game.state !== 'title';
   const outside = 1 - camS;
   FX.rain.update(camera.position, Cam.vel, outside);
+  MAT.roadRain.value = outside;
   _v1.set(Math.sin(focus.heading), 0, Math.cos(focus.heading));
-  FX.dust.update(camera.position, Cam.vel, _v1, (smoothstep(0.65, 1.1, sN) * 0.22 + (boost ? 0.3 : 0)) * (game.state === 'title' ? 0.3 : 1));
+  FX.dust.update(camera.position, Cam.vel, _v1, (smoothstep(0.65, 1.1, sN) * 0.22 + (boost ? 0.3 : 0) + (game.state === 'race' ? smoothstep(0.35, 0.9, focus.slipstream) * 0.25 : 0)) * (game.state === 'title' ? 0.3 : 1));
   FX.splash.update(dt, focus.s, U.uTime.value, outside, 90 * outside);
   updateFX(dt, cars, camera.position, player, camS);
   updateLampLights(focus.s);
@@ -4447,6 +4532,8 @@ async function init() {
     cars: cars.map((c) => ({ n: c.name, lap: c.lap, s: Math.round(c.s), d: +c.d.toFixed(1), v: Math.round(c.speed * 3.6), best: +(c.bestLap === Infinity ? 0 : c.bestLap).toFixed(2), fin: c.finished, st: c.stats })),
   });
   window.__audioRef = () => audio;
+  window.__three = () => ({ THREE, renderer, scene, camera });
+  window.__dev = () => ({ headlight, bloomPass, finalPass, FX, MAT, Cam, scene, player, game });
   window.__lightning = () => { LIGHTNING.next = 0; };
   // test hook: output level of the audio graph (rms, peak)
   window.__audioLevel = () => {
