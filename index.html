@@ -779,7 +779,7 @@ function buildEnvMap() {
 const TRACK_CAP = 8192;                  // samples kept (power of two)
 const TRACK_MASK = TRACK_CAP - 1;
 const START_S = 300;                     // start line; the road begins 300 m behind it
-const CALM_LEN = 700;                    // calm straight after the start line
+const CALM_LEN = 450;                    // calm straight after the start line
 const RACE_DIST = Math.round(clamp(parseFloat(PARAMS.get('dist')) || 8, 1, 50) * 10) * 100;   // metres, in 0.1 km steps
 const BANK_MAX = 0.22;                   // rad (~12.5°)
 const MIN_R = 95;                        // tightest corner (~215 km/h), always behind a clothoid entry
@@ -847,10 +847,10 @@ class Track {
   // next hill/dip height, limited so the slope stays drivable over the given run
   hill(run) {
     const r = this.rng, y0 = this.lastKeyY, maxD = run / 15;
-    const want = r() < 0.25 ? 0 : 3 + r() * 19;
+    const want = r() < 0.2 ? 0 : 3 + r() * 23;
     return clamp(want, Math.max(0, y0 - maxD), y0 + maxD);
   }
-  inFinishZone(s0, len) { const f = this.finishS; return s0 < f + 260 && s0 + len > f - 380; }
+  inFinishZone(s0, len) { const f = this.finishS; return s0 < f + 260 && s0 + len > f - 300; }
 
   // one corner: clothoid entry, constant arc, clothoid exit; never lets the heading leave ±MAX_HEAD
   planTurn(dir, angle, R) {
@@ -859,9 +859,9 @@ class Track {
     const room = dir > 0 ? MAX_HEAD - th : MAX_HEAD + th;
     angle = Math.min(angle, room - 0.03);
     if (angle < 0.12) { dir = -dir; angle = Math.min(angle + 0.3, (dir > 0 ? MAX_HEAD - th : MAX_HEAD + th) - 0.03); }
-    if (angle < 0.12) { this.addSeg(60, 0, 0); return 0; }
+    if (angle < 0.12) { this.addSeg(25, 0, 0); return 0; }
     const k = dir / R;
-    let Lr = clamp(R * 0.45, 40, 120), Lc = angle * R - Lr;
+    let Lr = clamp(R * 0.36, 32, 90), Lc = angle * R - Lr;   // (the finish-run S-bend assumes this length)
     if (Lc < 0) { Lr = angle * R; Lc = 0; }
     this.addSeg(Lr, 0, k); if (Lc > 0) this.addSeg(Lc, k, k); this.addSeg(Lr, k, 0);
     return dir;
@@ -872,19 +872,24 @@ class Track {
     const side = () => (r() < 0.5 ? 1 : -1);
     const pick = r();
     let dir = side();
-    if (pick < 0.3) {                                         // long banked sweeper
-      this.planTurn(dir, (60 + r() * 60) * D, 170 + r() * 190);
-    } else if (pick < 0.62) {                                 // S-bend
-      dir = this.planTurn(dir, (35 + r() * 40) * D, 130 + r() * 130) || dir;
-      this.addSeg(15 + r() * 50, 0, 0);
-      this.planTurn(-dir, (40 + r() * 45) * D, 130 + r() * 130);
+    if (pick < 0.26) {                                        // long banked sweeper
+      this.planTurn(dir, (70 + r() * 60) * D, 150 + r() * 110);
+    } else if (pick < 0.48) {                                 // S-bend
+      dir = this.planTurn(dir, (40 + r() * 40) * D, 115 + r() * 105) || dir;
+      this.addSeg(10 + r() * 30, 0, 0);
+      this.planTurn(-dir, (45 + r() * 45) * D, 115 + r() * 105);
+    } else if (pick < 0.64) {                                 // snake: four linked alternating bends
+      for (let q = 0; q < 4; q++) {
+        dir = this.planTurn(q === 0 ? dir : -dir, (30 + r() * 30) * D, 140 + r() * 80) || dir;
+        if (q < 3) this.addSeg(5 + r() * 20, 0, 0);
+      }
     } else if (pick < 0.84) {                                 // chicane: three quick flicks
       for (let q = 0; q < 3; q++) {
         dir = this.planTurn(q === 0 ? dir : -dir, (18 + r() * 20) * D * (q === 1 ? 1.7 : 1), MIN_R + r() * 45) || dir;
         if (q < 2) this.addSeg(8 + r() * 25, 0, 0);
       }
     } else {                                                  // hard corner after a braking zone
-      this.addSeg(130 + r() * 80, 0, 0);
+      this.addSeg(60 + r() * 40, 0, 0);
       this.planTurn(dir, (70 + r() * 40) * D, MIN_R + r() * 30);
     }
   }
@@ -900,8 +905,10 @@ class Track {
       this.lastTunnel = 170;
       return;
     }
-    const calmAt = this.finishS - 380;
-    if (s0 < calmAt && s0 > calmAt - 1300) {
+    const calmAt = this.finishS - 300;
+    // the last ~2.3 km before the calm finish run is corners only: they are sized to end exactly on time,
+    // while a tunnel or jump started here could run into the finish stretch
+    if (s0 < calmAt && s0 > calmAt - 2300) {
       // keep cornering right up to the calm finish stretch: retry complexes that would run into it
       for (let tries = 0; tries < 5 && calmAt - s0 > 220; tries++) {
         const snap = [this.segs.length, this.planS, this.planTheta];
@@ -912,40 +919,42 @@ class Track {
       }
       const rem = calmAt - s0;
       if (rem > 220) {                                  // fallback: an S-bend sized to fit exactly
-        const R = 180, half = (rem - 30) / 2, ang = Math.min((half - R * 0.45) / R, 0.9);
+        const R = 180, Lr = clamp(R * 0.36, 32, 90), half = (rem - 40) / 2, ang = Math.min((half - Lr) / R, 0.9);
         const d = this.planTurn(r() < 0.5 ? 1 : -1, ang, R) || 1;
-        this.addSeg(Math.max(1, calmAt - this.planS - (ang * R + R * 0.45) - 5), 0, 0);
+        this.addSeg(Math.max(1, calmAt - 10 - this.planS - (ang * R + Lr)), 0, 0);
         this.planTurn(-d, ang, R);
         return;
       }
     }
-    if (s0 >= calmAt - 1300 && this.inFinishZone(s0, 1300)) {   // calm, straight run to the finish gate
+    if (s0 >= calmAt - 2300 && this.inFinishZone(s0, 1300)) {   // calm, straight run to the finish gate
       const end = this.finishS + 260;
       const len = Math.max(end - s0, 120);
       this.addSeg(len, 0, 0);
       this.key(s0 + len, this.lastKeyY);
-      this.features.push({ type: 'arches', s0: this.finishS - 340, s1: this.finishS - 40, gap: 85 });
+      this.features.push({ type: 'arches', s0: this.finishS - 280, s1: this.finishS - 40, gap: 80 });
       return;
     }
-    const canJump = s0 - this.lastJump > 1300 && !this.inFinishZone(s0, 1400);
+    const canJump = s0 - this.lastJump > 900 && !this.inFinishZone(s0, 1200);
     const canTunnel = s0 - this.lastTunnel > 1000 && !this.inFinishZone(s0, 900);
     let roll = r();
     const wasStraight = this.lastStraight; this.lastStraight = false;
     if (s0 <= START_S + CALM_LEN + 1) {
       // the calm start opens into a wide sweeper that strings the pack out before the tight stuff
       const D = Math.PI / 180, dir = r() < 0.5 ? 1 : -1;
-      this.planTurn(dir, (45 + r() * 25) * D, 330 + r() * 120);
-      this.addSeg(60 + r() * 60, 0, 0);
-      this.planTurn(-dir, (35 + r() * 30) * D, 260 + r() * 120);
-      this.addSeg(80, 0, 0);
+      this.planTurn(dir, (50 + r() * 25) * D, 240 + r() * 90);
+      this.addSeg(30 + r() * 40, 0, 0);
+      this.planTurn(-dir, (45 + r() * 30) * D, 200 + r() * 90);
+      this.addSeg(40, 0, 0);
       this.key(this.planS, this.hill(this.planS - this.lastKeyS));
       return;
     }
-    if (canJump && roll < 0.24) {
+    if (canJump && roll < 0.2) {
       // climb through a corner complex, straight run-up, kicker lip, gap, landing straight
       this.planCorners();
+      // straight run-up for a clean take-off, and a landing run long enough for ~1.8 s of air plus braking
       const lip = Math.round(Math.max(this.planS + 170, this.lastKeyS + 15 * Math.abs(JUMP_H - this.lastKeyY) + KICK_LEN + 40));
-      this.addSeg(lip + GAP_LEN + 150 - this.planS, 0, 0);
+      this.addSeg(lip + GAP_LEN + 90 - this.planS, 0, 0);
+      this.planTurn(r() < 0.5 ? 1 : -1, (20 + r() * 20) * Math.PI / 180, 460 + r() * 200);   // flat-out bend while landing
       this.key(lip - KICK_LEN - 30, JUMP_H); this.key(lip, JUMP_H);
       const down = r() < 0.4 ? 0 : 3 + r() * 6;
       this.key(lip + GAP_LEN + Math.max(230, 15 * (JUMP_H - down)), down);
@@ -955,12 +964,15 @@ class Track {
       this.lastJump = lip;
       return;
     }
-    if (canTunnel && roll < 0.42) {
-      // run down to street level into a curving tunnel through a megastructure
-      const lead = Math.max(70, this.lastKeyS + 15 * this.lastKeyY + 25 - s0), Lt = 260 + r() * 200, tail = 60;
+    if (canTunnel && roll < 0.33) {
+      // run down to street level (through corners if it is a long way down) into a curving tunnel
+      const descent = () => this.lastKeyS + 15 * this.lastKeyY + 25 - this.planS;
+      for (let q = 0; q < 2 && descent() > 60; q++) { this.planCorners(); this.addSeg(5 + r() * 20, 0, 0); }
+      const base = this.planS;
+      const lead = Math.max(40, descent()), Lt = 260 + r() * 200, tail = 30;
       this.addSeg(lead, 0, 0);
       const t0 = this.planS;
-      const R = 260 + r() * 340, ang = Lt / R;
+      const R = 200 + r() * 220, ang = Lt / R;
       let dir = r() < 0.5 ? 1 : -1;
       if (Math.abs(this.planTheta + dir * ang) > MAX_HEAD - 0.05) dir = -dir;
       if (Math.abs(this.planTheta + dir * ang) <= MAX_HEAD - 0.05) {
@@ -971,15 +983,30 @@ class Track {
         this.addSeg(q, 0, k); this.addSeg(q, k, 0); this.addSeg(q, 0, -k); this.addSeg(q, -k, 0);
       }
       this.addSeg(tail, 0, 0);
-      this.key(s0 + Math.max(10, lead - 20), 0); this.key(t0 + Lt + 30, 0);
+      this.key(base + Math.max(10, lead - 20), 0); this.key(t0 + Lt + 30, 0);
       this.features.push({ type: 'tunnel', s0: t0, s1: t0 + Lt });
       this.lastTunnel = t0 + Lt;
       return;
     }
-    if (roll < 0.52 && !wasStraight) {
-      // a proper straight to stretch the boost: arches, maybe a pad, a crest on the way
+    if (roll < 0.41) {
+      // rollercoaster: a gently weaving run over a string of crests and dips
+      const n = 3 + Math.floor(r() * 3);
+      let y = this.lastKeyY, dir = this.planTheta > 0 ? -1 : 1;     // first weave toward the axis
+      for (let q = 0; q < n; q++) {
+        const L = 85 + r() * 40;
+        let k = dir / (230 + r() * 170);
+        if (Math.abs(this.planTheta + k * L / 2) > MAX_HEAD - 0.03) k = 0;   // never leave the heading corridor
+        this.addSeg(L / 2, 0, k); this.addSeg(L / 2, k, 0);
+        dir = -dir;
+        y = q % 2 ? Math.max(0, y - L / 14) : y + L / 14;
+        this.key(this.planS, y);
+      }
+      return;
+    }
+    if (roll < 0.45 && !wasStraight) {
+      // a short straight to stretch the boost: arches, maybe a pad, a crest on the way
       this.lastStraight = true;
-      const len = 250 + r() * 350;
+      const len = 170 + r() * 230;
       this.addSeg(len, 0, 0);
       if (r() < 0.75) this.features.push({ type: 'arches', s0: s0 + 40, s1: s0 + len - 40, gap: 75 + r() * 30 });
       if (r() < 0.55) { const p = s0 + 60 + r() * (len - 140); this.features.push({ type: 'pad', s0: p, s1: p + 16 }); }
@@ -988,7 +1015,7 @@ class Track {
     }
     // corners, with the road rising or dropping through them
     this.planCorners();
-    this.addSeg(25 + r() * 90, 0, 0);
+    this.addSeg(r() * 35, 0, 0);
     const mid = (s0 + this.planS) / 2;
     if (r() < 0.5) this.key(mid, this.hill(mid - this.keys[this.keys.length - 1][0]));
     this.key(this.planS, this.hill(this.planS - this.keys[this.keys.length - 1][0]));
@@ -1119,7 +1146,7 @@ class Track {
       // racing line: outside → apex → outside, faded out near jumps
       const g = (ss) => clamp(this.kAt(ss) * 110, -1, 1);
       let lr = clamp(-g(j) + 0.75 * g(j + 55) + 0.45 * g(j - 35), -1, 1) * 7.4;
-      const jn = this.jumpNear(j); if (jn) lr *= smoothstep(40, 140, Math.abs(j - jn.lip));
+      const jn = this.jumpNear(j); if (jn) lr *= smoothstep(60, 190, Math.abs(j - jn.lip));
       A.lraw[m] = lr;
       if (j >= 60) {                     // centred box filter, 30 samples behind
         let acc = 0; for (let q = j - 60; q <= j; q++) acc += A.lraw[q & TRACK_MASK];
@@ -2661,6 +2688,8 @@ class Car {
     const roadY = f2.p.y + f2.R.y * this.d;
     if (this.grounded) {
       if (inGap) {
+        // the kicker straightens the car: most of the sideways drift is killed at the lip
+        this.travel = f2.heading + wrapAngle(this.travel - f2.heading) * 0.35; this.pushV = 0;
         this.grounded = false; this.airTime = 0; this.events.push({ type: 'takeoff' });
       } else {
         const newVy = (roadY - this.y) / h;
