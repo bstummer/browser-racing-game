@@ -1895,7 +1895,8 @@ function* buildChunkCity(ch, r, holo, s0, s1) {
     const c = Math.cos(yaw), sn = Math.sin(yaw);
     // local x along the road, local z across it
     const corner = (lx, lz) => [cx + lx * c + lz * sn, cz - lx * sn + lz * c];
-    const P = [corner(-w / 2, dpt / 2), corner(w / 2, dpt / 2), corner(w / 2, -dpt / 2), corner(-w / 2, -dpt / 2)];
+    // counter-clockwise seen from above, so every wall (and the roof) faces outward
+    const P = [corner(-w / 2, -dpt / 2), corner(w / 2, -dpt / 2), corner(w / 2, dpt / 2), corner(-w / 2, dpt / 2)];
     for (let q = 0; q < 4; q++) {
       const [ax, az] = P[q], [bx, bz] = P[(q + 1) % 4];
       const ex = bx - ax, ez = bz - az, el = Math.hypot(ex, ez);
