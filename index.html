@@ -781,6 +781,7 @@ const TRACK_MASK = TRACK_CAP - 1;
 const START_S = 300;                     // start line; the road begins 300 m behind it
 const CALM_LEN = 700;                    // calm straight after the start line
 const RACE_DIST = Math.round(clamp(parseFloat(PARAMS.get('dist')) || 8, 1, 50) * 10) * 100;   // metres, in 0.1 km steps
+const BANK_MAX = 0.22;                   // rad (~12.5°)
 const MIN_R = 95;                        // tightest corner (~215 km/h), always behind a clothoid entry
 const MAX_HEAD = 75 * Math.PI / 180;     // heading limit around +Z: the road always advances, so it can never cross itself
 const KICK_H = 3.0, KICK_LEN = 55, GAP_LEN = 34, JUMP_H = 17;
@@ -814,9 +815,10 @@ class Track {
     this.seed = seed;
     this.rng = mulberry32(seedHash(seed));
     const A = (this.a = {});
-    for (const k of ['px', 'py', 'pz', 'tx', 'ty', 'tz', 'rx', 'ry', 'rz', 'nx', 'ny', 'nz', 'head', 'curv', 'bank', 'line', 'lraw', 'vmax', 'vraw', 'liftRaw', 'liftDil', 'lift'])
+    for (const k of ['px', 'py', 'pz', 'tx', 'ty', 'tz', 'rx', 'ry', 'rz', 'nx', 'ny', 'nz', 'head', 'curv', 'bank', 'line', 'lraw', 'vmax', 'vraw', 'liftRaw', 'liftDil', 'lift', 'bankRaw', 'bankB1', 'bankS'])
       A[k] = new Float32Array(TRACK_CAP);
     this.liftHead = 0;                    // next raw lift sample to compute
+    this.bankHead = 0;                    // next raw bank sample to compute
     this.head = 0;                        // next sample index to generate (samples [head-CAP, head) are valid)
     this.origin = { x: 0, z: 0 };         // floating origin: stored xz = absolute - origin
     this.gx = 0; this.gz = 0; this.gTheta = 0;   // generator state in absolute coordinates (float64)
@@ -995,7 +997,7 @@ class Track {
   // ------------------------------------------------------------ analytic profile
   kAt(s) {
     const S = this.segs;
-    let i = this.segPtr;
+    let i = Math.min(this.segPtr, S.length - 1);   // the planner may have dropped a trial complex
     while (i > 0 && S[i].s0 > s) i--;
     while (i < S.length - 1 && S[i].s1 <= s) i++;
     this.segPtr = i;
@@ -1011,10 +1013,37 @@ class Track {
     const a = K[lo], b = K[hi];
     return lerp(a[1], b[1], smootherstep(clamp((s - a[0]) / (b[0] - a[0]), 0, 1)));
   }
-  bankAt(s) {
-    let b = clamp(this.kAt(s) * 58, -0.34, 0.34);
+  // bank: a gentle, saturating function of curvature (max ~12.5°), then two centred box filters
+  // (±40 m, ±20 m) so it rolls in and out smoothly and quick flicks mostly cancel out
+  bankTarget(s) {
+    let b = BANK_MAX * Math.tanh(this.kAt(s) * 50 / BANK_MAX);
     const t = this.tunnelAt(s); if (t > 0) b *= 1 - 0.5 * t;
     return b;
+  }
+  fillBank(upTo) {
+    const A = this.a;
+    while (this.bankHead - 61 < upTo) {
+      const q = this.bankHead, c = q - 40, e = q - 60;
+      A.bankRaw[q & TRACK_MASK] = this.bankTarget(q);
+      if (c >= 0) {
+        let acc = 0, n = 0;
+        for (let t = Math.max(0, c - 40); t <= q; t++) { acc += A.bankRaw[t & TRACK_MASK]; n++; }
+        A.bankB1[c & TRACK_MASK] = acc / n;
+      }
+      if (e >= 0) {
+        let acc = 0, n = 0;
+        for (let t = Math.max(0, e - 20); t <= c; t++) { acc += A.bankB1[t & TRACK_MASK]; n++; }
+        A.bankS[e & TRACK_MASK] = acc / n;
+      }
+      this.bankHead++;
+    }
+  }
+  bankAt(s) {
+    s = Math.max(0, s);
+    const i = Math.floor(s), t = s - i;
+    this.fillBank(i + 1);
+    const B = this.a.bankS;
+    return B[i & TRACK_MASK] + (B[(i + 1) & TRACK_MASK] - B[i & TRACK_MASK]) * t;
   }
   // road height: base profile, lifted so a banked edge never sinks into the ground, plus the kicker.
   // The lift is max-filtered then box-filtered over ±30 m (ring buffers, like the racing line):
