@@ -201,7 +201,10 @@ button { font-family: var(--font); }
 #t-pause { left: 50%; top: 10px; transform: translateX(-50%); width: 46px; height: 46px; border-radius: 8px !important; }
 body.touch #speedo { transform: scale(.62); transform-origin: right bottom; right: 190px; bottom: 6px; }
 
-@media (max-height: 640px) { #press { display: none; } }
+@media (max-height: 860px) { #press { display: none; } }
+@media (max-height: 640px) {
+  .logo-main .l1 { font-size: min(15vw, 14vh, 150px); } .logo-main .l2 { font-size: min(11vw, 10.5vh, 108px); }
+  #logo { margin-top: 3vh; } #menu { margin-top: 2.5vh; } }
 @media (max-height: 460px) { .logo-sub, .logo-line, #tip { display: none; } .letterbox { height: 5vh; } #menu { margin-top: 2vh; } #record { margin-top: 1.5vh; } }
 @media (max-width: 820px), (max-height: 520px) {
   #pos-num { font-size: 60px; } #pos-suf { font-size: 20px; } #pos-tot { font-size: 16px; }
@@ -263,6 +266,7 @@ body.touch #speedo { transform: scale(.62); transform-origin: right bottom; righ
     <button class="mbtn sel" data-act="start">START RACE</button>
     <button class="mbtn" data-act="newtrack">NEW TRACK</button>
     <button class="mbtn" data-act="quality">GRAPHICS <b id="q-label">HIGH</b></button>
+    <button class="mbtn" data-act="volume">SOUND <b class="v-label">60%</b></button>
     <button class="mbtn" data-act="controls">CONTROLS</button>
   </div>
   <div id="seedrow">TRACK SEED <b id="seed-val">------</b><button id="seed-copy" data-act="copyseed">COPY LINK</button></div>
@@ -301,6 +305,7 @@ body.touch #speedo { transform: scale(.62); transform-origin: right bottom; righ
   <button class="mbtn sel" data-act="resume">RESUME</button>
   <button class="mbtn" data-act="restart">RESTART RACE</button>
   <button class="mbtn" data-act="quality">GRAPHICS <b class="q-label2">HIGH</b></button>
+  <button class="mbtn" data-act="volume">SOUND <b class="v-label">60%</b></button>
   <button class="mbtn" data-act="quit">QUIT TO MENU</button>
 </div>
 
@@ -3690,6 +3695,7 @@ class AudioSys {
   constructor() {
     this.ctx = null;
     this.muted = storeGet('neonOverdrive.muted', '0') === '1';
+    this.volume = clamp(parseFloat(storeGet('neonOverdrive.volume', '0.6')) || 0.6, 0, 1);
   }
   init() {
     if (this.ctx) { if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {}); return; }
@@ -3701,7 +3707,9 @@ class AudioSys {
     this.out = this.gain(this.muted ? 0 : 1);
     const comp = ctx.createDynamicsCompressor();
     comp.threshold.value = -12; comp.knee.value = 8; comp.ratio.value = 5; comp.attack.value = 0.004; comp.release.value = 0.2;
-    this.out.connect(comp); comp.connect(ctx.destination); this.comp = comp;
+    // master volume after the compressor, so turning it down doesn't change the mix's balance
+    this.vol = this.gain(this.volume);
+    this.out.connect(comp); comp.connect(this.vol); this.vol.connect(ctx.destination); this.comp = comp;
     this.lp = ctx.createBiquadFilter(); this.lp.type = 'lowpass'; this.lp.frequency.value = 20000; this.lp.Q.value = 0.8;
     this.lp.connect(this.out);
     this.master = this.gain(0.55, this.lp);
@@ -3924,6 +3932,10 @@ class AudioSys {
       const o = this.osc('square', mtof(n)), f = this.filt('lowpass', 4000), g = this.gain(0, this.master);
       o.connect(f); f.connect(g); g.connect(this.verb); this.env(g, t, 0.005, vol, 0.35); o.start(t); o.stop(t + 0.45);
     });
+  }
+  setVolume(v) {
+    this.volume = clamp(v, 0, 1); storeSet('neonOverdrive.volume', this.volume.toFixed(2));
+    if (this.ctx) this.set(this.vol.gain, this.volume, 0.05);
   }
   setMuted(m) {
     this.muted = m; storeSet('neonOverdrive.muted', m ? '1' : '0');
@@ -4832,6 +4844,7 @@ function setQuality(name) {
 function updateQualityLabels() {
   $('q-label').textContent = QS.name;
   document.querySelectorAll('.q-label2').forEach((e) => { e.textContent = QS.name; });
+  document.querySelectorAll('.v-label').forEach((e) => { e.textContent = Math.round(audio.volume * 100) + '%'; });
 }
 
 function onMenuAction(act) {
@@ -4842,6 +4855,10 @@ function onMenuAction(act) {
     case 'copyseed': copyLink($('seed-copy')); break;
     case 'copyres': copyLink($('res-copy')); break;
     case 'quality': setQuality(qualityName === 'high' ? 'low' : 'high'); break;
+    case 'volume': {
+      const steps = [0.2, 0.4, 0.6, 0.8, 1.0], i = steps.findIndex((v) => v > audio.volume + 0.01);
+      audio.setVolume(i < 0 ? steps[0] : steps[i]); updateQualityLabels(); break;
+    }
     case 'controls': $('panel').classList.remove('hidden'); Menu.open($('panel')); break;
     case 'close': $('panel').classList.add('hidden'); Menu.open($('menu')); break;
     case 'again': startRace(); break;
@@ -5324,7 +5341,7 @@ async function init() {
   // test hook: output level of the audio graph (rms, peak)
   window.__audioLevel = () => {
     if (!audio.ok) return null;
-    if (!audio.analyser) { audio.analyser = audio.ctx.createAnalyser(); audio.analyser.fftSize = 2048; audio.out.connect(audio.analyser); audio.analyser2 = audio.ctx.createAnalyser(); audio.analyser2.fftSize = 2048; audio.comp.connect(audio.analyser2); }
+    if (!audio.analyser) { audio.analyser = audio.ctx.createAnalyser(); audio.analyser.fftSize = 2048; audio.out.connect(audio.analyser); audio.analyser2 = audio.ctx.createAnalyser(); audio.analyser2.fftSize = 2048; audio.vol.connect(audio.analyser2); }
     const buf = new Float32Array(audio.analyser.fftSize); audio.analyser.getFloatTimeDomainData(buf);
     let sum = 0, peak = 0; for (const x of buf) { sum += x * x; peak = Math.max(peak, Math.abs(x)); }
     const b2 = new Float32Array(2048); audio.analyser2.getFloatTimeDomainData(b2);

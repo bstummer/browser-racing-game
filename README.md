@@ -42,7 +42,7 @@ On phones and tablets, touch buttons appear and the car accelerates automaticall
 - **Audio:** Web Audio synthesis for everything: a multi-oscillator engine with gear shifts and a rev limiter, wind, tyre squeal, scrape, boost whoosh, impacts, a Doppler-shifted rival engine, thunder, reverb in the tunnel, and a sidechained 122 BPM synthwave track that intensifies for the final kilometre.
 - **Performance:** there's a HIGH/LOW preset (MSAA, bloom resolution, particle counts, pooled lamp lights). An adaptive resolution scaler aims for 60 fps. Static geometry is merged per chunk or instanced, and a race frame is roughly 130–190 draw calls. Game logic costs about 0.5 ms of CPU per frame; press F to see FPS, resolution scale, draw calls and CPU time.
 
-Best time (with 1 km splits) per seed and distance, graphics preset, camera and mute state are stored in `localStorage`. The HUD shows distance to go, a progress bar with every car on it, the time gap to the car ahead, your split against your record, and a heading-up minimap of the road around and ahead of you.
+Best time (with 1 km splits) per seed and distance, graphics preset, sound volume (SOUND in the title and pause menus, 20–100%), camera and mute state are stored in `localStorage`. The HUD shows distance to go, a progress bar with every car on it, the time gap to the car ahead, your split against your record, and a heading-up minimap of the road around and ahead of you.
 
 ## Code layout
 

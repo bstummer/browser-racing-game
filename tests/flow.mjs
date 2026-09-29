@@ -41,6 +41,14 @@ await page.click('[data-act=quality]'); await page.waitForTimeout(300);
 const q1 = await page.textContent('#q-label');
 await page.click('[data-act=quality]'); await page.waitForTimeout(300);
 console.log(`${q0 !== q1 ? 'ok  ' : 'FAIL'} quality toggles ${q0} -> ${q1} -> ${await page.textContent('#q-label')}`); if (q0 === q1) failed++;
+// sound volume cycles through its steps and is remembered
+const v0 = await page.textContent('#menu .v-label');
+await page.click('#menu [data-act=volume]'); await page.waitForTimeout(200);
+const v1 = await page.textContent('#menu .v-label');
+const vStored = await page.evaluate(() => localStorage.getItem('neonOverdrive.volume'));
+const vOk = v0 === '60%' && v1 === '80%' && vStored === '0.80';
+console.log(`${vOk ? 'ok  ' : 'FAIL'} sound volume ${v0} -> ${v1} (stored ${vStored})`); if (!vOk) failed++;
+await page.click('#menu [data-act=volume]'); await page.click('#menu [data-act=volume]'); await page.click('#menu [data-act=volume]'); await page.click('#menu [data-act=volume]');
 // controls panel open/close with keyboard
 await page.click('[data-act=controls]'); await page.waitForTimeout(200);
 const panelOpen = await page.isVisible('#panel');
