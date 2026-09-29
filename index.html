@@ -2111,12 +2111,14 @@ const Stream = {
   forEachLamp(fn) { for (const ch of this.chunks.values()) for (const L of ch.lamps) fn(L); },
 };
 
-// ground + sky traffic follow the camera (snapped to the 44 m street grid so the grid never jumps)
+// the ground follows the camera (snapped to the 44 m street grid so the grid never jumps);
+// sky traffic lives in world space and wraps around the camera every SKY_WRAP metres
+const SKY_WRAP = 2400;
 function buildSurroundings() {
   const group = new THREE.Group();
   const r = mulberry32(777);
   const tr = [];
-  for (let lane = 0; lane < 16; lane++) {
+  for (let lane = 0; lane < 24; lane++) {
     const ang = r() * TAU, y = 70 + r() * 140, len = 2600;
     const dir = [Math.cos(ang), 0, Math.sin(ang)];
     const start = [-dir[0] * len / 2 + (r() - 0.5) * 1200, y, -dir[2] * len / 2 + (r() - 0.5) * 1200];
@@ -2130,21 +2132,21 @@ function buildSurroundings() {
   tg.setAttribute('aDir', new THREE.BufferAttribute(td, 3));
   tg.setAttribute('aParams', new THREE.BufferAttribute(ta, 4));
   const tm = new THREE.ShaderMaterial({
-    uniforms: { uTime: U.uTime, fogColor: U.fogColor, fogDensity: U.fogDensity, uCam: { value: new THREE.Vector3() }, uOff: { value: new THREE.Vector2() } },
+    uniforms: { uTime: U.uTime, fogColor: U.fogColor, fogDensity: U.fogDensity, uOff: { value: new THREE.Vector2() } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */`
-      attribute vec3 aDir; attribute vec4 aParams; uniform float uTime; uniform vec3 uCam; uniform vec2 uOff;
+      attribute vec3 aDir; attribute vec4 aParams; uniform float uTime; uniform vec2 uOff;
       varying vec3 vCol; varying float vDist;
-      const float P = 3000.0;
+      const float P = ${SKY_WRAP.toFixed(1)};
       void main() {
         // each flying car keeps a world position (drifting along its lane) and wraps around the camera
         // far out in the fog; it fades out before the wrap and at the ends of its lane, so nothing pops
         float along = mod(aParams.z + uTime * aParams.x, aParams.y), u = along / aParams.y;
         vec3 p = position + aDir * along;
-        p.xz = uCam.xz + mod(p.xz - uCam.xz - uOff, P) - 0.5 * P;
+        p.xz = cameraPosition.xz + mod(p.xz - cameraPosition.xz - uOff, P) - 0.5 * P;
         vec4 mv = viewMatrix * vec4(p, 1.0);
         vDist = -mv.z;
-        float fade = smoothstep(0.0, 0.05, u) * smoothstep(1.0, 0.95, u) * smoothstep(1400.0, 1000.0, length(p.xz - uCam.xz));
+        float fade = smoothstep(0.0, 0.05, u) * smoothstep(1.0, 0.95, u) * smoothstep(P * 0.48, P * 0.36, length(p.xz - cameraPosition.xz));
         vCol = (aParams.w < 0.5 ? vec3(1.0, 0.95, 0.85) * 3.0 : vec3(1.0, 0.15, 0.35) * 3.0) * fade;
         gl_PointSize = clamp(900.0 / vDist, 1.5, 7.0);
         gl_Position = projectionMatrix * mv;
@@ -3152,7 +3154,8 @@ class SpeedDust {
           float len = clamp(vl * 0.055, 0.0, 9.0);
           vec3 wp = uCam + rel - dir * len * aEnd;
           float dist = length(rel);
-          vA = uAlpha * (1.0 - aEnd) * smoothstep(uBox.x * 0.5, uBox.x * 0.2, dist);
+          vA = uAlpha * (1.0 - aEnd) * smoothstep(uBox.x * 0.5, uBox.x * 0.2, dist)
+            * smoothstep(uBox.y * 0.5, uBox.y * 0.34, abs(rel.y));   // streaks wrap top<->bottom unseen when the road climbs or dips
           float k = fract(seed.y * 7.31);
           vC = k < 0.4 ? vec3(0.2, 0.9, 1.0) : k < 0.7 ? vec3(1.0, 0.25, 0.6) : vec3(0.85, 0.85, 1.0);
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
@@ -5120,14 +5123,6 @@ function rebaseWorld() {
   FX.splash.shift(dx, dz, 0);
   rebuildStreaks();
 }
-// shader time wraps every hour so float precision never degrades
-function wrapTime() {
-  const P = 3600;
-  if (U.uTime.value < P) return;
-  U.uTime.value -= P;
-  for (const tm of FX.trails.times) for (let k = 0; k < tm.length; k++) if (tm[k] > -1e8) tm[k] -= P;
-  FX.splash.shift(0, 0, P);
-}
 
 // ---------------------------------------------------------------- per-frame visuals & audio
 function updateWorld(rawDt, dt) {
@@ -5138,16 +5133,13 @@ function updateWorld(rawDt, dt) {
   streamWorld(false);
   const camS = track.tunnelAt(focus.s);
   U.uTime.value += dt;
-  wrapTime();
   for (const f of WORLD.animated) f(U.uTime.value);
   Stream.animate(U.uTime.value);
   WORLD.sky.position.copy(camera.position);
   U.uOrigin.value.set(track.origin.x, track.origin.z);
-  // world-anchored particles must ignore the floating-origin re-centring
-  FX.rain.mat.uniforms.uOff.value.set(mod(track.origin.x, 64), 0, mod(track.origin.z, 64));
-  FX.dust.mat.uniforms.uOff.value.set(mod(track.origin.x, 56), 0, mod(track.origin.z, 56));
-  WORLD.skyTraffic.material.uniforms.uCam.value.copy(camera.position);
-  WORLD.skyTraffic.material.uniforms.uOff.value.set(mod(track.origin.x, 3000), mod(track.origin.z, 3000));
+  // world-anchored particles must ignore the floating-origin re-centring (offset reduced by each wrap period)
+  for (const m of [FX.rain.mat, FX.dust.mat]) { const b = m.uniforms.uBox.value; m.uniforms.uOff.value.set(mod(track.origin.x, b.x), 0, mod(track.origin.z, b.z)); }
+  WORLD.skyTraffic.material.uniforms.uOff.value.set(mod(track.origin.x, SKY_WRAP), mod(track.origin.z, SKY_WRAP));
   WORLD.surroundings.position.set(Math.round(camera.position.x / 44) * 44, 0, Math.round(camera.position.z / 44) * 44);
   updateLightning(dt, camS);
   const sN = clamp(Math.abs(focus.speed) / TOP_SPEED, 0, 1.3);
