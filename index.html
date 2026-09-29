@@ -354,7 +354,7 @@ const RACE_LAPS = clamp(parseInt(PARAMS.get('laps'), 10) || 3, 1, 9);
 const IS_TOUCH = navigator.maxTouchPoints > 0 && matchMedia('(pointer: coarse)').matches;
 
 const RW = 10.2;                 // road half-width, centre line to barrier face (m)
-const CAR_HW = 1.0;
+const CAR_HW = 1.0, CAR_HL = 2.25;
 const D_LIMIT = RW - CAR_HW;
 const GRAV = 22;                 // arcade gravity: snappy jumps
 const TOP_SPEED = 92;            // m/s  (~331 km/h)
@@ -1509,17 +1509,20 @@ function buildProps(track) {
     if (f.p.y > 3.2 && !track.inGap(s) && !track.inGap(s + 2) && !track.inGap(s - 2)) sup.push(s);
   }
   const colGeo = new THREE.BoxGeometry(2.6, 1, 2.2); colGeo.translate(0, 0.5, 0);
-  const capGeo = new THREE.BoxGeometry((RW + 0.7) * 2, 1.2, 2.6); capGeo.translate(0, -0.6, 0);
+  const capGeo = new THREE.BoxGeometry(RW * 2, 1.2, 2.6); capGeo.translate(0, -0.65, 0);
   const colMesh = new THREE.InstancedMesh(colGeo, MAT.barrier, sup.length);
   const capMesh = new THREE.InstancedMesh(capGeo, MAT.barrier, sup.length);
   sup.forEach((s, i) => {
     const f = track.sample(s);
     _v1.set(f.R.x, 0, f.R.z).normalize(); _v3.crossVectors(_v1, UP);
-    const h = f.p.y - 1.6 - (-1.2);
+    // cap follows the banked deck (a flat cap pokes through the low side of a banked road)
+    const capTop = _v2.copy(f.p).addScaledVector(f.N, -1.6);
+    const zc = new THREE.Vector3().crossVectors(f.R, f.N).normalize();
+    m.makeBasis(f.R, f.N, zc).setPosition(capTop);
+    capMesh.setMatrixAt(i, m);
+    const h = capTop.y - 1.1 - (-1.2);
     m.makeBasis(_v1, UP, _v3).setPosition(_v2.set(f.p.x, -1.2, f.p.z)).multiply(mS.makeScale(1, h, 1));
     colMesh.setMatrixAt(i, m);
-    m.makeBasis(_v1, UP, _v3).setPosition(_v2.set(f.p.x, f.p.y - 1.6, f.p.z));
-    capMesh.setMatrixAt(i, m);
   });
   group.add(colMesh, capMesh);
 
@@ -2310,28 +2313,36 @@ class Car {
     else if (this.s < 0) { this.s += track.length; this.crossLine(-1); }
 
     // ---- barrier contact: slide along, lose a little speed, never stop dead
-    if (Math.abs(this.d) > D_LIMIT) {
+    // the car's footprint across the road grows when it is angled, so the corners touch first
+    const hRelW = wrapAngle(this.heading - f.heading);
+    const reach = Math.min(CAR_HW * Math.abs(Math.cos(hRelW)) + CAR_HL * Math.abs(Math.sin(hRelW)), 2.4);
+    const lim = RW - reach;
+    if (Math.abs(this.d) > lim) {
       const side = Math.sign(this.d);
-      this.d = side * D_LIMIT;
       const into = vd * side;
+      // resolve penetration gently: only what this step pushed in is removed at once
+      this.d = side * Math.max(lim, Math.abs(this.d) - Math.max(0, into) * h - 0.6 * h * 10);
+      if (Math.abs(this.d) > D_LIMIT + 0.05) this.d = side * (D_LIMIT + 0.05);
       if (into > 0) {
         const vT = this.speed * Math.cos(alpha);
-        const keep = clamp(1 - into * 0.03, 0.72, 1);
-        const nT = vT * keep, nL = -side * into * 0.22;
+        // friction proportional to the impact impulse; a long scrape can't grind the car below ~30 m/s
+        const loss = Math.min(0.3 * into * 1.18, Math.abs(vT) * 0.28);
+        const floor = Math.min(Math.abs(vT), 30);
+        const nT = Math.sign(vT) * Math.max(floor, Math.abs(vT) - loss), nL = -side * Math.min(into * 0.18, 3);
         const sp = Math.hypot(nT, nL) * (vT >= 0 ? 1 : -1);
         this.speed = sp;
         const na = Math.abs(sp) > 0.01 ? Math.atan2(-nL / sp, nT / sp) : 0;
         this.travel = f.heading + na;
-        const hRel = wrapAngle(this.heading - f.heading);
-        if (hRel * side < 0) this.heading = f.heading + hRel * 0.45;
-        this.pushV = -side * Math.min(into * 0.15, 2);
+        this.pushV = 0;
         if (into > 3.2) {
-          this.wobbleV += side * clamp(into * 0.012, 0, 0.5);
+          this.wobbleV += side * clamp(into * 0.005, 0, 0.15);
           this.events.push({ type: 'wall', strength: clamp(into / 22, 0.15, 1), side });
           this.stats.walls++;
         }
         this.scrape = Math.max(this.scrape, clamp(av / 60, 0.2, 1));
       }
+      // ease the nose back parallel to the barrier over ~0.15 s instead of snapping it
+      if (hRelW * side < 0) this.heading -= hRelW * (1 - Math.exp(-6 * h));
     }
     this.scrape = Math.max(0, this.scrape - h * 3);
 
