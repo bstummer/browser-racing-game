@@ -2581,7 +2581,7 @@ class Car {
     this.heading = f.heading; this.travel = f.heading; this.speed = 0;
     this.y = f.p.y + f.R.y * d; this.vy = 0; this.grounded = true; this.airTime = 0;
     this.steer = 0; this.gear = 1; this.rpm = 1000; this.shiftTimer = 0; this.limiter = 0;
-    this.drifting = false; this.driftDir = 0; this.driftTime = 0; this.slip = 0;
+    this.drifting = false; this.driftDir = 0; this.driftTime = 0; this.slip = 0; this.exitT = 0;
     this.boost = 0.25; this.boosting = false; this.miniTurbo = 0; this.padBoost = 0; this.startBoost = 0;
     this.slipstream = 0; this.pushV = 0; this.latVel = 0; this.accel = 0;
     this.finished = false; this.finishTime = 0; this.progress = this.s - START_S; this.splitKm = 0; this.splits = [];
@@ -2623,7 +2623,7 @@ class Car {
         this.events.push({ type: 'driftStart' });
       }
       if (this.drifting && (!c.drift || av < 11)) {
-        this.drifting = false;
+        this.drifting = false; this.exitT = 0.5;
         if (this.driftTime > 0.75 && av > 11) {
           const tier = this.driftTime > 2.6 ? 3 : this.driftTime > 1.5 ? 2 : 1;
           this.miniTurbo = 0.35 + tier * 0.25;
@@ -2636,11 +2636,13 @@ class Car {
       let yawRate;
       if (this.drifting) {
         this.driftTime += h;
+        // the arc is steerable: neutral follows a typical corner, into it tightens to the tightest
+        // corners, away from it opens wide (it used to be far tighter than any corner on the road)
         const into = this.steer * this.driftDir;          // +1 tighter, -1 wider
-        yawRate = -this.driftDir * wm * (1.08 + 0.5 * into);
-        grip = 2.0 + (1 - into) * 0.9;
+        yawRate = -this.driftDir * wm * (0.62 + 0.38 * into);
+        grip = 1.6 + (1 - into) * 0.7;                    // looser rear = a bigger drift angle for the same arc
         // boost meter charge from a committed slide
-        this.boost = Math.min(1, this.boost + h * (0.1 + 0.16 * clamp(Math.abs(this.slip) / 0.5, 0, 1.2)) * clamp(av / 40, 0.3, 1.2));
+        this.boost = Math.min(1, this.boost + h * (0.1 + 0.16 * clamp(Math.abs(this.slip) / 0.35, 0, 1.2)) * clamp(av / 40, 0.3, 1.2));
       } else {
         yawRate = -this.steer * wm;
         if (c.drift && av > 5) grip = 3.5;              // handbrake without steering
@@ -2648,6 +2650,18 @@ class Car {
       if (v < 0) yawRate = -yawRate;
       this.yawRate = yawRate;
       this.heading += yawRate * h;
+      if (this.exitT > 0) {
+        // drift exit: the nose swings back onto the line the car is travelling instead of the car
+        // snapping onto the nose (which fired it, mini-turbo and all, wherever the nose pointed)
+        this.exitT -= h;
+        this.heading -= wrapAngle(this.heading - this.travel) * (1 - Math.exp(-12 * h)) * 0.85;
+        // and the exit straightens out along the road over ~0.5 s, so the mini-turbo fires down the track
+        const rel = wrapAngle(this.travel - f.heading), lim = 0.02;
+        if (Math.abs(rel) > lim) {
+          const corr = (rel - Math.sign(rel) * lim) * (1 - Math.exp(-5 * h));
+          this.travel -= corr; this.heading -= corr;
+        }
+      }
       const diff = wrapAngle(this.heading - this.travel);
       this.travel += diff * (1 - Math.exp(-grip * h));
       this.slip = wrapAngle(this.heading - this.travel);
