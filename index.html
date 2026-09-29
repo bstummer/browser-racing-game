@@ -1725,11 +1725,11 @@ function buildLandmark() {
 function buildSky() {
   const g = new THREE.Group();
   const skyMat = new THREE.ShaderMaterial({
-    uniforms: { uTime: U.uTime, fogColor: U.fogColor },
+    uniforms: { uTime: U.uTime, fogColor: U.fogColor, uFlash: { value: 0 }, uFlashDir: { value: new THREE.Vector2(1, 0) } },
     side: THREE.BackSide, depthWrite: false, depthTest: false, fog: false,
     vertexShader: `varying vec3 vDir; void main(){ vDir = position; vec4 p = projectionMatrix * modelViewMatrix * vec4(position, 1.0); gl_Position = p.xyww; }`,
     fragmentShader: /* glsl */`
-      varying vec3 vDir; uniform float uTime; uniform vec3 fogColor;
+      varying vec3 vDir; uniform float uTime; uniform vec3 fogColor; uniform float uFlash; uniform vec2 uFlashDir;
       ${HASH_GLSL}
       void main() {
         vec3 d = normalize(vDir); float y = d.y;
@@ -1743,6 +1743,8 @@ function buildSky() {
           float cl = smoothstep(0.38, 0.9, n);
           vec3 cc = mix(vec3(0.22, 0.05, 0.22), vec3(0.04, 0.025, 0.1), smoothstep(0.0, 0.45, y));
           c = mix(c, cc, cl * smoothstep(0.0, 0.06, y) * 0.85);
+          float toward = 0.4 + 0.6 * pow(max(dot(normalize(d.xz), uFlashDir), 0.0), 3.0);
+          c += vec3(0.55, 0.5, 0.85) * uFlash * toward * (0.25 + cl) * smoothstep(-0.02, 0.25, y);
         }
         float az = atan(d.z, d.x);
         float x = az * 95.0, id = floor(x);
@@ -1762,6 +1764,7 @@ function buildSky() {
   sky.frustumCulled = false; sky.renderOrder = -10;
   g.add(sky);
   WORLD.sky = sky;
+  WORLD.skyMat = skyMat;
   // sweeping searchlights
   const beamMat = new THREE.ShaderMaterial({
     uniforms: { uTime: U.uTime },
@@ -1786,13 +1789,16 @@ function buildSky() {
 // =====================================================================
 //  CAR MODEL (lofted superellipse body)
 // =====================================================================
+// UVs: u runs around the section starting at the bottom centre (0 bottom, .25 left, .5 top, .75 right),
+// v runs from the rear (0) to the nose (1). The seam sits under the car.
 function loftGeometry(sections, segs = 24, taper = 0.18) {
-  const pos = [], idx = [];
+  const pos = [], idx = [], uv = [];
+  const z0 = sections[0].z, z1 = sections[sections.length - 1].z;
   const ring = (sec) => {
     const out = [];
     const cy = (sec.y0 + sec.y1) / 2, hh = (sec.y1 - sec.y0) / 2, e = 2 / sec.n;
-    for (let k = 0; k < segs; k++) {
-      const a = (k / segs) * TAU, ca = Math.cos(a), sa = Math.sin(a);
+    for (let k = 0; k <= segs; k++) {
+      const a = -Math.PI / 2 + (k / segs) * TAU, ca = Math.cos(a), sa = Math.sin(a);
       const y = Math.sign(sa) * Math.pow(Math.abs(sa), e);
       let x = Math.sign(ca) * Math.pow(Math.abs(ca), e) * sec.hw;
       if (y > 0) x *= 1 - taper * y;
@@ -1801,18 +1807,19 @@ function loftGeometry(sections, segs = 24, taper = 0.18) {
     return out;
   };
   const rings = sections.map(ring);
-  rings.forEach((r) => r.forEach((p) => pos.push(...p)));
+  const R1 = segs + 1;
+  rings.forEach((r, si) => r.forEach((p, k) => { pos.push(...p); uv.push(k / segs, (sections[si].z - z0) / (z1 - z0)); }));
   for (let si = 0; si < sections.length - 1; si++) for (let k = 0; k < segs; k++) {
-    const a = si * segs + k, b = si * segs + ((k + 1) % segs), c = a + segs, d = b + segs;
+    const a = si * R1 + k, b = a + 1, c = a + R1, d = b + R1;
     idx.push(a, b, c, b, d, c);
   }
   // caps with their own vertices (hard edge)
   const cap = (r, sec, front) => {
     const base = pos.length / 3;
-    pos.push(0, (sec.y0 + sec.y1) / 2, sec.z);
-    r.forEach((p) => pos.push(...p));
+    pos.push(0, (sec.y0 + sec.y1) / 2, sec.z); uv.push(0.4, front ? 0.99 : 0.01);
+    r.forEach((p) => { pos.push(...p); uv.push(0.4, front ? 0.99 : 0.01); });
     for (let k = 0; k < segs; k++) {
-      const p0 = base + 1 + k, p1 = base + 1 + ((k + 1) % segs);
+      const p0 = base + 1 + k, p1 = base + 2 + k;
       if (front) idx.push(base, p0, p1); else idx.push(base, p1, p0);
     }
   };
@@ -1820,9 +1827,59 @@ function loftGeometry(sections, segs = 24, taper = 0.18) {
   cap(rings[rings.length - 1], sections[sections.length - 1], true);
   const g = new THREE.BufferGeometry();
   g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  g.setAttribute('uv', new THREE.Float32BufferAttribute(uv, 2));
   g.setIndex(idx);
   g.computeVertexNormals();
+  // weld normals across the duplicated seam column so the underside stays smooth
+  const n = g.attributes.normal;
+  for (let si = 0; si < sections.length; si++) {
+    const a = si * R1, b = si * R1 + segs;
+    const x = n.getX(a) + n.getX(b), y = n.getY(a) + n.getY(b), zz = n.getZ(a) + n.getZ(b), l = Math.hypot(x, y, zz) || 1;
+    n.setXYZ(a, x / l, y / l, zz / l); n.setXYZ(b, x / l, y / l, zz / l);
+  }
   return g;
+}
+
+// Per-car livery painted on a canvas (u around the body, v along it; ~6.6 mm per pixel both ways)
+function makeLivery(o, num) {
+  const W = 1024, H = 700, c = makeCanvas(W, H), g = c.getContext('2d');
+  const body = '#' + new THREE.Color(o.body).getHexString(), acc = '#' + new THREE.Color(o.accent).getHexString();
+  const lighter = '#' + new THREE.Color(o.body).offsetHSL(0, 0, 0.12).getHexString();
+  g.fillStyle = body; g.fillRect(0, 0, W, H);
+  // subtle metallic flake
+  const r = mulberry32(num * 31);
+  for (let k = 0; k < 2500; k++) { g.fillStyle = `rgba(255,255,255,${r() * 0.05})`; g.fillRect(r() * W, r() * H, 2, 2); }
+  // twin racing stripes over the top
+  g.fillStyle = o.stripe || '#f2f4ff';
+  g.fillRect(W * 0.465, 0, W * 0.024, H); g.fillRect(W * 0.511, 0, W * 0.024, H);
+  g.fillStyle = acc; g.fillRect(W * 0.492, 0, W * 0.016, H);
+  // sill stripes + a fade on the lower flanks
+  for (const u of [0.1, 0.9]) {
+    const gr = g.createLinearGradient(W * (u - 0.06), 0, W * (u + 0.06), 0);
+    gr.addColorStop(0, 'rgba(0,0,0,0)'); gr.addColorStop(0.5, lighter); gr.addColorStop(1, 'rgba(0,0,0,0)');
+    g.fillStyle = gr; g.fillRect(W * (u - 0.06), 0, W * 0.12, H);
+    g.fillStyle = acc; g.fillRect(W * (u - 0.004), 0, W * 0.008, H);
+  }
+  // number roundels on both flanks
+  for (const [u, rot] of [[0.25, Math.PI / 2], [0.75, -Math.PI / 2]]) {
+    g.save(); g.translate(W * u, H * 0.52); g.rotate(rot);
+    g.fillStyle = '#f2f4ff'; g.beginPath(); g.ellipse(0, 0, 58, 44, 0, 0, TAU); g.fill();
+    g.lineWidth = 6; g.strokeStyle = acc; g.stroke();
+    g.fillStyle = '#0b0714'; g.font = 'italic 900 58px "Arial Black", Impact, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+    g.fillText(String(num).padStart(2, '0'), 0, 3);
+    g.restore();
+  }
+  // driver name on the rear deck, readable from the chase camera
+  g.save(); g.translate(W * 0.5, H * 0.9);
+  g.font = 'italic 900 44px "Arial Black", Impact, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillStyle = acc; g.fillText(o.name, 0, 0);
+  g.restore();
+  // hood chevron
+  g.save(); g.translate(W * 0.5, H * 0.16); g.fillStyle = acc; g.globalAlpha = 0.85;
+  g.beginPath(); g.moveTo(-70, 30); g.lineTo(0, -20); g.lineTo(70, 30); g.lineTo(70, 46); g.lineTo(0, -4); g.lineTo(-70, 46); g.closePath(); g.fill();
+  g.restore();
+  const t = texFromCanvas(c, { aniso: true });
+  return t;
 }
 
 const CAR_SHARED = {};
@@ -1868,7 +1925,8 @@ function initCarShared() {
     (() => { const g = new THREE.BoxGeometry(1.7, 0.16, 0.5); g.translate(0, 0.26, -2.1); return g; })(),
     (() => { const g = new THREE.BoxGeometry(1.8, 0.05, 0.4); g.translate(0, 0.22, 2.25); return g; })(),
   ]);
-  const wingNoUv = CAR_SHARED.wing.clone(); wingNoUv.deleteAttribute('uv');
+  const wingNoUv = CAR_SHARED.wing.clone();
+  const wuv = wingNoUv.attributes.uv; for (let i = 0; i < wuv.count; i++) wuv.setXY(i, 0.4, 0.03);
   CAR_SHARED.bodyWing = mergeGeos([CAR_SHARED.body.clone(), wingNoUv]);
   const flame = new THREE.ConeGeometry(0.14, 1, 12, 1, true); flame.translate(0, 0.5, 0); flame.rotateX(-Math.PI / 2);
   CAR_SHARED.flames = mergeGeos([flame.clone().translate(0.42, 0.36, -2.28), flame.clone().translate(-0.42, 0.36, -2.28)]);
@@ -1915,7 +1973,7 @@ function buildCarMesh(o) {
   const root = new THREE.Group();
   const body = new THREE.Group();
   root.add(body);
-  const paint = new THREE.MeshPhysicalMaterial({ color: o.body, metalness: 0.6, roughness: 0.28, clearcoat: 1, clearcoatRoughness: 0.07, envMapIntensity: 1.5 });
+  const paint = new THREE.MeshPhysicalMaterial({ color: 0xffffff, map: makeLivery(o, o.index + 1), metalness: 0.55, roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.06, envMapIntensity: 1.5 });
   body.add(new THREE.Mesh(CAR_SHARED.bodyWing, paint));
   body.add(new THREE.Mesh(CAR_SHARED.canopy, CAR_SHARED.glass));
   // all lamps in one vertex-coloured mesh (tail lights are recoloured when braking)
@@ -2188,14 +2246,15 @@ class Car {
 
   crossLine(dir) {
     if (dir > 0) {
-      if (this.lapValid && game.state === 'race' && !this.finished) {
+      const racing = game.state === 'race' || game.state === 'finish' || game.state === 'results';
+      if (this.lapValid && racing && !this.finished) {
         const t = game.raceTime - this.lapStart;
         this.lastLap = t; this.lapTimes.push(t);
         if (t < this.bestLap) this.bestLap = t;
         this.events.push({ type: 'lap', time: t, lap: this.lap });
       }
       this.lap++; this.lapStart = game.raceTime; this.lapValid = true;
-      if (game.state === 'race' && this.lap > RACE_LAPS && !this.finished) {
+      if (racing && this.lap > RACE_LAPS && !this.finished) {
         this.finished = true; this.finishTime = game.raceTime; this.events.push({ type: 'finish' });
       }
     } else { this.lap--; this.lapValid = false; }
@@ -2272,7 +2331,7 @@ function collideCars(cars) {
       const st = clamp(closing / 12, 0.12, 1);
       if (a.bumpCool <= 0 && b.bumpCool <= 0) {
         a.events.push({ type: 'bump', other: b, strength: st, side: sg }); b.events.push({ type: 'bump', other: a, strength: st, side: -sg });
-        a.bumpCool = b.bumpCool = 0.3; a.stats.bumps++; b.stats.bumps++;
+        a.bumpCool = b.bumpCool = 0.3; a.stats.bumps++; b.stats.bumps++; a.stats.side = (a.stats.side || 0) + 1; b.stats.side = (b.stats.side || 0) + 1;
       }
     } else {
       const sg = Math.sign(ds) || 1;
@@ -2285,7 +2344,7 @@ function collideCars(cars) {
         const st = clamp(closing / 18, 0.15, 1);
         if (back.bumpCool <= 0 || st > 0.5) {
           back.events.push({ type: 'bump', other: front, strength: st, side: 0 }); front.events.push({ type: 'bump', other: back, strength: st, side: 0 });
-          back.bumpCool = front.bumpCool = 0.3; back.stats.bumps++; front.stats.bumps++;
+          back.bumpCool = front.bumpCool = 0.3; back.stats.bumps++; front.stats.bumps++; back.stats.rear = (back.stats.rear || 0) + 1; if (game.raceTime < 5) back.stats.early = (back.stats.early || 0) + 1;
         }
       }
     }
@@ -2334,27 +2393,40 @@ class AIDriver {
     this.wobT += dt;
     let dLine = track.lineAt(c.s + look) + this.bias * (1 - Math.min(1, Math.abs(track.curvAt(c.s + look)) * 90)) + Math.sin(this.wobT * 0.4) * 0.6;
     const L = track.length;
-    let blocked = false;
+    let blocked = false, followSpeed = Infinity, alongside = false;
+    // pass 1: cars ahead (overtake) and the chaser behind (defend)
     for (const o of cars) {
       if (o === c) continue;
       let ds = o.s - c.s; if (ds > L / 2) ds -= L; else if (ds < -L / 2) ds += L;
-      if (ds > 0 && ds < 32) {
-        const dd = o.d - c.d;
+      const dd = o.d - c.d;
+      if (ds >= 5 && ds < 40) {
         const closing = c.speed - o.speed;
-        if (Math.abs(dd) < 3.0 && (closing > -2 || ds < 12)) {
-          // overtake on the side with more room
+        const ttc = closing > 0.1 ? ds / closing : 99;
+        if (Math.abs(dd) < 3.2 && (ttc < 2.5 || ds < 14)) {
+          // overtake on the side with more room, commit to the side we are already on
           const roomL = o.d + D_LIMIT, roomR = D_LIMIT - o.d;
-          const side = roomR > roomL ? 1 : -1;
-          dLine = o.d + side * 3.6;
-          blocked = ds < 10 && closing > 0;
+          let side = roomR > roomL ? 1 : -1;
+          if (Math.abs(dd) > 0.8) side = dd > 0 ? -1 : 1;
+          dLine = o.d + side * 3.8;
+          if (ttc < 1.1 || ds < 9) { blocked = true; followSpeed = Math.min(followSpeed, o.speed - 0.5); }
         }
-      } else if (ds < 0 && ds > -24 && o === target && this.aggr > 0.45) {
-        // defend: drift toward the chaser's line
-        dLine = lerp(dLine, o.d, 0.4 * this.aggr * (1 + ds / 24));
+      } else if (ds < -7 && ds > -26 && o === target && this.aggr > 0.45) {
+        // defend: drift toward the chaser's line (only while it is still behind us)
+        dLine = lerp(dLine, o.d, 0.35 * this.aggr * (1 + ds / 26));
       }
     }
-    dLine = clamp(dLine, -D_LIMIT + 0.6, D_LIMIT - 0.6);
-    this.offset = damp(this.offset, dLine, 2.2, dt);
+    // pass 2: cars alongside - hold our side and keep a car's width of air between us
+    for (const o of cars) {
+      if (o === c) continue;
+      let ds = o.s - c.s; if (ds > L / 2) ds -= L; else if (ds < -L / 2) ds += L;
+      const dd = o.d - c.d;
+      if (Math.abs(ds) < 7 && Math.abs(dd) < 3.4) {
+        alongside = true;
+        if (dd >= 0) dLine = Math.min(dLine, o.d - 3.1); else dLine = Math.max(dLine, o.d + 3.1);
+      }
+    }
+    dLine = clamp(dLine, -D_LIMIT + 0.5, D_LIMIT - 0.5);
+    this.offset = damp(this.offset, dLine, alongside || blocked ? 4.5 : 2.2, dt);
     const fa = track.sample(c.s + look, _aiFrame2);
     const desiredRel = Math.atan2(-(this.offset - c.d), look);
     const desiredHeading = f.heading + desiredRel + wrapAngle(fa.heading - f.heading) * 0.55;
@@ -2369,7 +2441,7 @@ class AIDriver {
     const rb = 1 - clamp(gap / 320, -1, 1) * 0.075;
     c.topMul = this.skill * rb;
     let vT = Math.min(track.speedAt(c.s + 4), track.speedAt(c.s + 20)) * (0.94 + 0.08 * this.skill) * rb;
-    if (blocked) vT = Math.min(vT, c.speed - 1);
+    if (blocked) vT = Math.min(vT, followSpeed);
     if (c.speed < vT - 1) { ctl.throttle = 1; ctl.brake = 0; }
     else if (c.speed > vT + 2.5) { ctl.throttle = 0; ctl.brake = clamp((c.speed - vT) / 12, 0.15, 1); }
     else { ctl.throttle = 0.6; ctl.brake = 0; }
@@ -2761,7 +2833,7 @@ class Trails {
       let f = clamp(1 - age / this.maxAge, 0, 1);
       // keep the ribbon out of the camera's face
       const dc = Math.hypot(vx, vy, vz);
-      f *= smoothstep(2.5, 7, dc);
+      f *= smoothstep(4, 12, dc);
       const wdt = width * (0.35 + 0.65 * f);
       const a = (base + k * 2) * 3;
       this.pos[a] = px + side.x * wdt; this.pos[a + 1] = py + side.y * wdt; this.pos[a + 2] = pz + side.z * wdt;
@@ -2909,6 +2981,14 @@ function updateFX(dt, cars, camPos, player, tunnelK) {
           car.vel.z * 0.25 + (Math.random() - 0.5) * 3, 1.3 + Math.random() * 0.8, 0.9, 4.5 + smokeK * 3.5, _smokeCol, 0.28 + smokeK * 0.28);
       }
     }
+    // rooster-tail spray off the wet asphalt
+    if (car.grounded && av > 22 && track.tunnelAt(car.s) < 0.5 && Math.random() < clamp((av - 22) / 50, 0, 1) * dt * 50) {
+      _smokeCol.setRGB(0.36, 0.4, 0.55).lerp(car.accent, 0.12);
+      const side = Math.random() < 0.5 ? -1 : 1;
+      wheelPos(car, side, _v1);
+      sm.emit(_v1.x, _v1.y + 0.1, _v1.z, car.vel.x * 0.55 + (Math.random() - 0.5) * 2.5, 1.2 + Math.random() * 1.6,
+        car.vel.z * 0.55 + (Math.random() - 0.5) * 2.5, 0.45 + Math.random() * 0.3, 0.7, 3.4, _smokeCol, 0.22);
+    }
     // drift sparks (colour = charge tier)
     if (car.drifting && av > 15 && Math.random() < dt * 60) {
       const tier = car.driftTime > 2.6 ? 2 : car.driftTime > 1.5 ? 1 : 0;
@@ -2963,7 +3043,7 @@ function updateFX(dt, cars, camPos, player, tunnelK) {
       FX.trails.push(ci * 2 + k, _v1, U.uTime.value);
       let trailK = clamp((av - 18) / 40, 0, 1) * (car.boostActive ? 1.6 : 1);
       if (car === player && (game.state === 'race' || game.state === 'countdown') && Cam.mode !== 'cine') trailK = 0;
-      FX.trails.build(ci * 2 + k, camPos, car.boostActive ? car.accent : _trailRed, trailK * 1.2, 0.06);
+      FX.trails.build(ci * 2 + k, camPos, car.boostActive ? car.accent : _trailRed, trailK * 0.95, 0.045);
     }
     // ---- dynamic wet reflections of car lights
     if (dyn + 2 <= st.maxDynamic) {
@@ -3206,6 +3286,20 @@ class AudioSys {
     o.start(t); o.stop(t + dur + 0.05);
   }
   ui(sel) { this.beep(sel ? 1320 : 880, sel ? 0.12 : 0.05, sel ? 0.12 : 0.07); }
+  thunder(delay, muffle = 0) {
+    if (!this.ctx) return;
+    const t = this.ctx.currentTime + delay;
+    const n = this.noiseSrc(false), f = this.filt('lowpass', 900, 0.5), g = this.gain(0, this.master);
+    f.frequency.setValueAtTime(1600 * (1 - muffle * 0.7), t); f.frequency.exponentialRampToValueAtTime(140, t + 2.2);
+    n.connect(f); f.connect(g); g.connect(this.verb);
+    g.gain.setValueAtTime(0.0001, t); g.gain.linearRampToValueAtTime(0.32 * (1 - muffle * 0.5), t + 0.05);
+    g.gain.setTargetAtTime(0.12, t + 0.1, 0.25); g.gain.setTargetAtTime(0.0001, t + 0.9, 0.7);
+    n.start(t, Math.random()); n.stop(t + 3.8);
+    const o = this.osc('sine', 48), og = this.gain(0, this.master);
+    o.frequency.setValueAtTime(55, t); o.frequency.exponentialRampToValueAtTime(30, t + 2.5);
+    o.connect(og); og.gain.setValueAtTime(0.0001, t); og.gain.linearRampToValueAtTime(0.25, t + 0.15); og.gain.setTargetAtTime(0.0001, t + 0.5, 0.8);
+    o.start(t); o.stop(t + 4);
+  }
   chime(notes = [72, 76, 79, 84], gap = 0.08, vol = 0.12) {
     if (!this.ctx) return;
     const t0 = this.ctx.currentTime;
@@ -3625,7 +3719,7 @@ function newCineShot(tgt, title) {
     Cam.cineS = tgt.s + 70 + Math.random() * 50;
     const side = Math.random() < 0.5 ? -1 : 1;
     const tunnel = track.tunnelAt(Cam.cineS) > 0;
-    track.point(Cam.cineS, side * (tunnel ? RW - 1.5 : RW + 0.5), tunnel ? 2 + Math.random() * 4 : 1.6 + Math.random() * 5, Cam.cinePos);
+    track.point(Cam.cineS, side * (tunnel ? RW - 1.5 : RW - 0.8), tunnel ? 2.5 + Math.random() * 3.5 : 3 + Math.random() * 4, Cam.cinePos);
     Cam.shotLen = 9;
   } else if (shot === 1) { Cam.orbitA = Math.random() * TAU; Cam.shotLen = 6; }
   else if (shot === 2) { Cam.shotLen = 6; }
@@ -3890,7 +3984,7 @@ function perfTick(rawDt) {
 let track, cars = [], player = null, drivers = [], playerAI = null, lampLights = [], headlight = null;
 let recordLap = parseFloat(storeGet('neonOverdrive.bestLap', '0')) || 0;
 const RIVALS = [
-  { name: 'VEGA', body: 0x0b7c93, accent: C.cyan, skill: 1.0, aggr: 0.75, bias: -1.6 },
+  { name: 'VEGA', body: 0x0b7c93, accent: C.pink, skill: 1.0, aggr: 0.75, bias: -1.6 },
   { name: 'KIRA', body: 0x4d1aa8, accent: C.violet, skill: 0.99, aggr: 0.5, bias: 1.8 },
   { name: 'NOVA', body: 0x1a39a8, accent: C.blue, skill: 0.975, aggr: 0.3, bias: 0.6 },
   { name: 'RAZE', body: 0xa85a0c, accent: C.amber, skill: 0.965, aggr: 0.85, bias: -0.8 },
@@ -4138,7 +4232,6 @@ function simulate(dt) {
       const thr = c === player ? player.ctl.throttle : (game.countT > 2.8 ? 0.6 + Math.random() * 0.3 : 0.1);
       c.rpm = damp(c.rpm, 1000 + thr * 6800, thr > 0.1 ? 6 : 3, dt);
       c.ctl.throttle = thr;
-      c.upd(dt);
     }
     if (player.ctl.throttle > 0.5 && game.thrPressT < 0) game.thrPressT = game.countT;
     if (player.ctl.throttle < 0.5) game.thrPressT = -1;
@@ -4187,6 +4280,7 @@ function updateWorld(rawDt, dt) {
   U.uTime.value += dt;
   for (const f of WORLD.animated) f(U.uTime.value);
   WORLD.sky.position.copy(camera.position);
+  updateLightning(dt, camS);
   const sN = clamp(Math.abs(focus.speed) / TOP_SPEED, 0, 1.3);
   const boost = focus.boostActive && game.state !== 'title';
   const outside = 1 - camS;
@@ -4229,6 +4323,29 @@ function updateWorld(rawDt, dt) {
       paused: game.paused, engineOn: racingView || Cam.shot !== 3, menu: !racingView, opp: oppInfo,
     });
   }
+}
+
+// ---------------------------------------------------------------- lightning
+const LIGHTNING = { next: 9 + Math.random() * 10, t: -1, pulses: [], hemi: null, baseFog: new THREE.Color(C.fog), flashFog: new THREE.Color(0x4a3a7a) };
+function updateLightning(dt, tunnelK) {
+  const L = LIGHTNING;
+  L.next -= dt;
+  if (L.next <= 0) {
+    L.next = 14 + Math.random() * 22; L.t = 0;
+    L.pulses = [[0, 0.07, 1], [0.12, 0.06, 0.55], [0.26, 0.16, 0.85]].slice(0, 1 + Math.floor(Math.random() * 3));
+    const a = Math.random() * TAU;
+    WORLD.skyMat.uniforms.uFlashDir.value.set(Math.cos(a), Math.sin(a));
+    audio.thunder(0.7 + Math.random() * 1.8, tunnelK);
+  }
+  let k = 0;
+  if (L.t >= 0) {
+    L.t += dt;
+    for (const [t0, len, amp] of L.pulses) if (L.t >= t0 && L.t < t0 + len + 0.12) k = Math.max(k, amp * (L.t < t0 + len ? 1 : 1 - (L.t - t0 - len) / 0.12));
+    if (L.t > 0.6) L.t = -1;
+  }
+  WORLD.skyMat.uniforms.uFlash.value = k;
+  scene.fog.color.copy(L.baseFog).lerp(L.flashFog, k * 0.6 * (1 - tunnelK));
+  if (L.hemi) L.hemi.intensity = 0.35 + k * 1.6 * (1 - tunnelK);
 }
 
 // ---------------------------------------------------------------- main loop
@@ -4297,13 +4414,14 @@ async function init() {
   scene.add(buildLandmark());
   scene.add(buildSky());
   // lighting: dim moonlight + hemisphere; the neon does the rest
-  scene.add(new THREE.HemisphereLight(0x6a4cc0, 0x12081f, 0.35));
+  LIGHTNING.hemi = new THREE.HemisphereLight(0x6a4cc0, 0x12081f, 0.35);
+  scene.add(LIGHTNING.hemi);
   const moon = new THREE.DirectionalLight(0x8a9cff, 0.35); moon.position.set(-300, 500, 200); scene.add(moon);
   initCarShared();
-  player = new Car({ name: 'YOU', isPlayer: true, index: 0, body: 0xc0106a, accent: C.pink });
+  player = new Car({ name: 'YOU', isPlayer: true, index: 0, body: 0xc0106a, accent: C.cyan, stripe: '#10081e' });
   cars.push(player);
   RIVALS.forEach((r, i) => {
-    const c = new Car({ name: r.name, index: i + 1, body: r.body, accent: r.accent });
+    const c = new Car({ name: r.name, index: i + 1, body: r.body, accent: r.accent, stripe: r.stripe });
     cars.push(c);
     drivers.push(new AIDriver(c, { skill: r.skill, aggr: r.aggr, bias: r.bias }));
   });
@@ -4329,6 +4447,7 @@ async function init() {
     cars: cars.map((c) => ({ n: c.name, lap: c.lap, s: Math.round(c.s), d: +c.d.toFixed(1), v: Math.round(c.speed * 3.6), best: +(c.bestLap === Infinity ? 0 : c.bestLap).toFixed(2), fin: c.finished, st: c.stats })),
   });
   window.__audioRef = () => audio;
+  window.__lightning = () => { LIGHTNING.next = 0; };
   // test hook: output level of the audio graph (rms, peak)
   window.__audioLevel = () => {
     if (!audio.ok) return null;
