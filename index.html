@@ -1552,6 +1552,12 @@ function bannerTex(text, c1, c2) {
   if (!BANNERS.has(key)) BANNERS.set(key, makeBannerTex(text, c1, c2));
   return BANNERS.get(key);
 }
+const BANNER_MATS = new Map();
+function bannerMat(text, c1, gain, side) {
+  const key = text + c1 + gain + side;
+  if (!BANNER_MATS.has(key)) BANNER_MATS.set(key, new THREE.MeshBasicMaterial({ map: bannerTex(text, c1, '#ffffff'), color: hdr(0xffffff, gain), side }));
+  return BANNER_MATS.get(key);
+}
 const boxAt = (w, h, d, x, y, z) => { const g = new THREE.BoxGeometry(w, h, d); g.translate(x, y, z); return g; };
 function withColor(geo, color) {
   const g = geo.clone(), n = g.attributes.position.count, c = new Float32Array(n * 3);
@@ -1756,11 +1762,11 @@ function* buildChunk(ch) {
   const gantryAt = (s, text, c1) => {
     roadBasis(s, _cm);
     metal.push(placed(TEMPL.gantry, _cm));
-    const banner = bannerTex(text, c1, '#ffffff');
+    const bmat = bannerMat(text, c1, 1.8, THREE.FrontSide);          // shared: never disposed with the chunk
     for (const z of [-0.75, 0.75]) {
-      const bm = new THREE.Mesh(new THREE.PlaneGeometry((RW + 2) * 2, 2.8), new THREE.MeshBasicMaterial({ map: banner, color: hdr(0xffffff, 1.8) }));
+      const bm = new THREE.Mesh(new THREE.PlaneGeometry((RW + 2) * 2, 2.8), bmat);
       bm.position.set(0, 12.2, z); if (z < 0) bm.rotation.y = Math.PI;
-      bm.applyMatrix4(_cm); g.add(bm); ch.mats.push(bm.material);
+      bm.applyMatrix4(_cm); g.add(bm);
     }
   };
   if (START_S >= s0 && START_S < s1) gantryAt(START_S, 'START', '#19f0ff');
@@ -1889,11 +1895,11 @@ function* buildChunk(ch) {
       og.setIndex(oidx);
       add(og, MAT.neonDS);
       const names = ['ARCOLOGY 7', 'SECTOR 9', 'NEXUS SPIRE', 'HELIX 4', 'MEGABLOCK 12'];
-      const banner = bannerTex(tf.closed ? 'NEON OVERDRIVE' : dir < 0 ? names[Math.floor(tf.s0) % names.length] : 'EXIT // KEEP LEFT', dir < 0 ? '#ff2a8a' : '#19f0ff', '#ffffff');
-      const bm = new THREE.Mesh(new THREE.PlaneGeometry(24, 3), new THREE.MeshBasicMaterial({ map: banner, color: hdr(0xffffff, 1.6), side: THREE.DoubleSide }));
+      const bmat = bannerMat(tf.closed ? 'NEON OVERDRIVE' : dir < 0 ? names[Math.floor(tf.s0) % names.length] : 'EXIT // KEEP LEFT', dir < 0 ? '#ff2a8a' : '#19f0ff', 1.6, THREE.DoubleSide);
+      const bm = new THREE.Mesh(new THREE.PlaneGeometry(24, 3), bmat);
       bm.position.copy(f.p).addScaledVector(f.N, 14).addScaledVector(f.T, dir * 0.5);
       bm.lookAt(_cp.copy(bm.position).addScaledVector(f.T, dir));
-      g.add(bm); ch.mats.push(bm.material);
+      g.add(bm);
     }
   }
   yield;
@@ -2603,7 +2609,7 @@ class Car {
     this.drifting = false; this.driftDir = 0; this.driftTime = 0; this.slip = 0; this.exitT = 0;
     this.boost = 0.25; this.boosting = false; this.miniTurbo = 0; this.padBoost = 0; this.startBoost = 0;
     this.slipstream = 0; this.pushV = 0; this.latVel = 0; this.accel = 0;
-    this.finished = false; this.finishTime = 0; this.progress = this.s - START_S; this.splitKm = 0; this.splits = [];
+    this.finished = false; this.finishTime = 0; this.progress = this.s - START_S; this.splitKm = 0; this.splits = []; this.over = 0;
     this.wobble = 0; this.wobbleV = 0; this.roll = 0; this.pitch = 0; this.susp = 0; this.suspV = 0;
     this.scrape = 0; this.ghost = 0; this.wrongWay = 0; this.stuck = 0; this.bumpCool = 0;
     this.topMul = 1; this.accMul = 1; this.skid = 0; this.wheelRot = 0; this.yawRate = 0;
@@ -2700,7 +2706,7 @@ class Car {
       if (c.throttle < 0.05 && c.brake < 0.05) a -= Math.sign(v) * (2.2 + av * 0.025);
       a -= Math.sign(v) * (0.8 + v * v * 0.00035);
       a -= GRAV * f.T.y * 0.8;
-      a -= Math.abs(Math.sin(this.slip)) * av * (this.drifting ? 0.22 : 0.9);
+      a -= Math.sign(v) * Math.abs(Math.sin(this.slip)) * av * (this.drifting ? 0.22 : 0.9);
       if (v > top) a -= (v - top) * (boostOn ? 2 : 0.9);
       this.speed += a * h;
       if (Math.abs(this.speed) < 0.05 && c.throttle < 0.05) this.speed = 0;
@@ -2733,14 +2739,24 @@ class Car {
     const vd = -this.speed * Math.sin(alpha) + this.pushV;
     this.latVel = vd;
     this.pushV = damp(this.pushV, 0, 5, h);
-    const sPrev = this.s;
+    const sPrev = this.s + this.over;
     this.s += vs * h; this.d += vd * h;
-    if (this.s < track.tail + 5) { this.s = track.tail + 5; if (this.speed < 0) this.speed = 0; }
-    if (this.s > track.head - 60) this.s = track.head - 60;   // never outrun the generated road
+    // the sealed start tunnel's end wall (or the oldest sample still in the buffer)
+    const minS = Math.max(CAR_HL + 2, track.tail + 5);
+    if (this.s < minS) { this.s = minS; if (vs < 0) this.speed = 0; }
+    // a car far ahead of the player can reach the end of the generated road: it waits there, but its
+    // progress keeps counting, and it moves on once the road has been generated
+    if (this.over > 0) { const m = Math.min(this.over, Math.max(0, track.head - 60 - this.s)); this.s += m; this.over -= m; }
+    if (this.s > track.head - 60) { this.over += this.s - (track.head - 60); this.s = track.head - 60; }
 
     // ---- barrier contact: slide along, lose a little speed, never stop dead
     // the car's footprint across the road grows when it is angled, so the corners touch first
     const hRelW = wrapAngle(this.heading - f.heading);
+    // nose angle to the nearest parallel direction (a car facing backwards is parallel at ±π); the
+    // sign of 'into' flips for a backwards car, so noseIn() says when the nose points at a barrier
+    const fwdFacing = Math.abs(hRelW) <= Math.PI / 2;
+    const relPar = fwdFacing ? hRelW : wrapAngle(hRelW - Math.PI);
+    const noseIn = (side) => relPar * side * (fwdFacing ? 1 : -1) < 0;
     const reach = Math.min(CAR_HW * Math.abs(Math.cos(hRelW)) + CAR_HL * Math.abs(Math.sin(hRelW)), 2.4);
     const lim = RW - reach;
     this.wallCool = Math.max(0, (this.wallCool || 0) - h);
@@ -2761,13 +2777,13 @@ class Car {
         const vT = this.speed * Math.cos(alpha), vL = -this.speed * Math.sin(alpha) - side * dv;
         const loss = Math.min(0.35 * dv, Math.abs(vT) * 0.02);      // friction from the push, spread over the contact
         const nT = Math.sign(vT) * Math.max(Math.min(Math.abs(vT), 30), Math.abs(vT) - loss);
-        const sp = Math.hypot(nT, vL) * (vT >= 0 ? 1 : -1);
+        const sp = Math.hypot(nT, vL) * (this.speed >= 0 ? 1 : -1);   // the car's own sign (a wrong-way car has vT < 0)
         this.speed = sp;
         this.travel = f.heading + Math.atan2(-vL / sp, nT / sp);
         this.pushV *= 0.5;
         if (gap < 0.25) this.scrape = Math.max(this.scrape, clamp(av / 60, 0.2, 1));
         // the nose follows round toward parallel as well, or grip would keep steering it back in
-        if (gap < 0.8 && hRelW * side < 0) this.heading -= hRelW * (1 - Math.exp(-4 * h));
+        if (gap < 0.8 && noseIn(side)) this.heading -= relPar * (1 - Math.exp(-4 * h));
       } else if (gap > 1.6) this.approach = 0;
     }
     if (Math.abs(this.d) > lim) {
@@ -2783,7 +2799,7 @@ class Car {
         const loss = Math.min(0.3 * dv * 1.18, Math.abs(vT) * 0.05);
         const floor = Math.min(Math.abs(vT), 30);
         const nT = Math.sign(vT) * Math.max(floor, Math.abs(vT) - loss), nL = side * (into - dv);   // lateral velocity still into the barrier
-        const sp = Math.hypot(nT, nL) * (vT >= 0 ? 1 : -1);
+        const sp = Math.hypot(nT, nL) * (this.speed >= 0 ? 1 : -1);
         this.speed = sp;
         const na = Math.abs(sp) > 0.01 ? Math.atan2(-nL / sp, nT / sp) : 0;
         this.travel = f.heading + na;
@@ -2796,7 +2812,7 @@ class Car {
         this.scrape = Math.max(this.scrape, clamp(av / 60, 0.2, 1));
       }
       // ease the nose back parallel to the barrier over ~0.15 s instead of snapping it
-      if (hRelW * side < 0) this.heading -= hRelW * (1 - Math.exp(-4.5 * h));
+      if (noseIn(side)) this.heading -= relPar * (1 - Math.exp(-4.5 * h));
     }
     this.scrape = Math.max(0, this.scrape - h * 3);
 
@@ -2836,7 +2852,7 @@ class Car {
     }
 
     // ---- boost pads (the one before every jump guarantees the distance)
-    if (this.grounded && Math.abs(this.d) < 7.5) {
+    if (this.grounded && Math.abs(this.d) < 7.5 && vs > 1) {
       const pad = track.padAt(this.s);
       if (pad) {
         if (this.padBoost < 0.5) this.events.push({ type: 'pad' });
@@ -2845,11 +2861,12 @@ class Car {
       }
     }
 
-    this.progress = this.s - START_S;
+    this.progress = this.s + this.over - START_S;
     const racing = game.state === 'race' || game.state === 'finish' || game.state === 'results';
-    if (racing && !this.finished && this.s >= track.finishS) {
+    if (racing && !this.finished && this.s + this.over >= track.finishS) {
       // exact crossing moment inside this substep
-      const frac = this.s > sPrev ? clamp((track.finishS - sPrev) / (this.s - sPrev), 0, 1) : 1;
+      const sNow = this.s + this.over;
+      const frac = sNow > sPrev ? clamp((track.finishS - sPrev) / (sNow - sPrev), 0, 1) : 1;
       this.finished = true; this.finishTime = game.raceTime + game.subT + h * frac; this.events.push({ type: 'finish' });
     }
     if (racing && this.isPlayer && !this.finished) {
@@ -2919,6 +2936,8 @@ class Car {
 }
 
 // ---- car/car contact and slipstream (track space)
+const _ccF = new Frame();
+const alongSpeed = (c) => c.speed * Math.cos(wrapAngle(c.travel - track.sample(c.s, _ccF).heading));
 function collideCars(cars) {
   for (let i = 0; i < cars.length; i++) for (let j = i + 1; j < cars.length; j++) {
     const a = cars[i], b = cars[j];
@@ -2946,9 +2965,10 @@ function collideCars(cars) {
       const sg = Math.sign(ds) || 1;
       const back = sg > 0 ? a : b, front = sg > 0 ? b : a;
       back.s -= penS * 0.5; front.s += penS * 0.5;
-      const closing = back.speed - front.speed;
+      // closing speed along the road (a wrong-way car's speed points the other way)
+      const bv = alongSpeed(back), fv = alongSpeed(front), closing = bv - fv;
       if (closing > 0) {
-        back.speed -= closing * 0.55; front.speed += closing * 0.35;
+        back.speed -= Math.sign(bv || 1) * closing * 0.55; front.speed += Math.sign(fv || 1) * closing * 0.35;
         back.wobbleV += (Math.random() - 0.5) * 0.15; front.wobbleV += (Math.random() - 0.5) * 0.2;
         const st = clamp(closing / 18, 0.15, 1);
         if (back.bumpCool <= 0 || st > 0.5) {
@@ -3200,12 +3220,12 @@ class Streaks {
     g.instanceCount = 0;
     this.geo = g;
     this.mat = new THREE.ShaderMaterial({
-      uniforms: { uTime: U.uTime, uGain: { value: 1 } },
+      uniforms: { uTime: U.uTime, uGain: { value: 1 }, uOrigin: U.uOrigin },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4,
       vertexShader: /* glsl */`
         attribute vec3 iLight; attribute vec3 iGround; attribute vec3 iNormal; attribute vec3 iColor; attribute vec2 iParams;
-        uniform float uGain;
+        uniform float uGain; uniform vec2 uOrigin;
         varying vec2 vUv; varying vec3 vColor; varying float vPhase;
         void main() {
           vec3 N = length(iNormal) > 0.01 ? normalize(iNormal) : vec3(0.0, 1.0, 0.0);
@@ -3224,7 +3244,8 @@ class Streaks {
           float along = mix(a0, a1, uv.y);
           float w = iParams.x * (0.7 + 0.3 * uv.y + D * 0.004);
           vec3 pos = iGround + dir * along + side * (uv.x - 0.5) * w + N * 0.04;
-          vUv = uv; vPhase = iGround.x * 0.13 + iGround.z * 0.07;
+          vec2 gAbs = mod(iGround.xz + uOrigin, 2400.0);             // absolute: the ripple survives re-centring
+          vUv = uv; vPhase = gAbs.x * 0.13 + gAbs.y * 0.07;
           // a light behind the camera cannot reflect toward it
           vec3 camFwd = -vec3(viewMatrix[0][2], viewMatrix[1][2], viewMatrix[2][2]);
           float front = smoothstep(-1.0, 8.0, dot(iGround - cameraPosition, camFwd));
@@ -4388,6 +4409,8 @@ function newCineShot(tgt, title) {
   const options = title ? [0, 1, 2, 3, 4, 0, 3] : [0, 0, 2, 4, 1];
   let shot = options[Math.floor(Math.random() * options.length)];
   if (shot === Cam.shot && Math.random() < 0.7) shot = options[(options.indexOf(shot) + 1) % options.length];
+  // the helicopter and aerial shots would put the camera inside the megastructure around a tunnel
+  if ((shot === 2 || shot === 3) && (track.tunnelAt(tgt.s) > 0 || track.tunnelAt(tgt.s + 80) > 0 || track.tunnelAt(tgt.s + 300) > 0)) shot = 4;
   Cam.shot = shot;
   Cam.cineSide = Math.random() < 0.5 ? -1 : 1;
   if (shot === 0) {
@@ -4870,9 +4893,35 @@ function pauseGame(p) {
   if (p) Menu.open($('pause')); else Menu.close();
 }
 
+// compile every material a streamed chunk (or an effect) can use now, not when the first tunnel or jump shows up
+// mid-race. Compiled against the composer's render target: that decides the variant (linear, no tone
+// mapping) real frames use; the light count is part of it too, so this runs again after a quality change.
+function warmShaders() {
+  const warm = new THREE.Group(), tri = new THREE.BufferGeometry();
+  tri.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
+  tri.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3));
+  tri.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1], 2));
+  tri.setAttribute('color', new THREE.Float32BufferAttribute([1, 1, 1, 1, 1, 1, 1, 1, 1], 3));
+  tri.setAttribute('aInfo', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0, 0, 0, 0], 3));
+  tri.setAttribute('aSeed', new THREE.Float32BufferAttribute([0, 0, 0], 1));
+  tri.setAttribute('aLocal', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 2));
+  for (const m of [MAT.road, MAT.barrier, MAT.metal, MAT.tunnel, MAT.neon, MAT.glow, MAT.building, MAT.holo, MAT.checker, MAT.padMat,
+    MAT.portal, MAT.neonDS, MAT.strobe, MAT.lmRing1, MAT.lmRing2, MAT.lmBeam,
+    bannerMat('START', '#19f0ff', 1.8, THREE.FrontSide), bannerMat('EXIT // KEEP LEFT', '#19f0ff', 1.6, THREE.DoubleSide)]) warm.add(new THREE.Mesh(tri, m));
+  warm.add(new THREE.LineSegments(tri, MAT.lmOuter), new THREE.LineSegments(tri, MAT.lmInner));
+  const wi = new THREE.InstancedMesh(tri, MAT.chev, 1); wi.setMatrixAt(0, new THREE.Matrix4()); wi.setColorAt(0, new THREE.Color(1, 1, 1)); warm.add(wi);
+  warm.position.copy(camera.position).addScaledVector(camera.getWorldDirection(_v1), 5);
+  scene.add(warm);
+  const ringVis = FX.ring.mesh.visible; FX.ring.mesh.visible = true;         // the boost shock ring (double-sided)
+  renderer.setRenderTarget(composer.readBuffer); renderer.compile(scene, camera); renderer.setRenderTarget(null);
+  if (!NORENDER) composer.render(0.016);
+  FX.ring.mesh.visible = ringVis;
+  scene.remove(warm); wi.dispose(); tri.dispose();
+}
+
 function setQuality(name) {
   qualityName = name; QS = QUALITY[name]; storeSet('neonOverdrive.quality', name);
-  buildComposer(); applyFXQuality(); setupLampLights();
+  buildComposer(); applyFXQuality(); setupLampLights(); warmShaders();
   updateQualityLabels();
 }
 function updateQualityLabels() {
@@ -5095,7 +5144,7 @@ function simulate(dt) {
   if (st !== 'title') game.raceTime += dt;
   // wrong way
   if (st === 'race') {
-    const rel = Math.abs(wrapAngle(player.travel - track.sample(player.s, _camF).heading));
+    const rel = Math.abs(wrapAngle(player.travel + (player.speed < 0 ? Math.PI : 0) - track.sample(player.s, _camF).heading));   // direction of motion
     player.wrongWay = rel > 1.9 && Math.abs(player.speed) > 4 ? player.wrongWay + dt : 0;
     HUD.el.wrong.classList.toggle('hidden', player.wrongWay < 1);
   } else HUD.el.wrong.classList.add('hidden');
@@ -5335,24 +5384,7 @@ async function init() {
   toTitle();
   cars.forEach((c) => c.upd(0));
   updateCamera(0.016, 0.016, cars[0]);
-  // compile every material a streamed chunk can use now, not when the first tunnel shows up mid-race
-  const warm = new THREE.Group(), tri = new THREE.BufferGeometry();
-  tri.setAttribute('position', new THREE.Float32BufferAttribute([0, 0, 0, 1, 0, 0, 0, 1, 0], 3));
-  tri.setAttribute('normal', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1, 0, 0, 1], 3));
-  tri.setAttribute('uv', new THREE.Float32BufferAttribute([0, 0, 1, 0, 0, 1], 2));
-  tri.setAttribute('color', new THREE.Float32BufferAttribute([1, 1, 1, 1, 1, 1, 1, 1, 1], 3));
-  tri.setAttribute('aInfo', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0, 0, 0, 0], 3));
-  tri.setAttribute('aSeed', new THREE.Float32BufferAttribute([0, 0, 0], 1));
-  tri.setAttribute('aLocal', new THREE.Float32BufferAttribute([0, 0, 0, 0, 0, 0], 2));
-  for (const m of [MAT.road, MAT.barrier, MAT.metal, MAT.tunnel, MAT.neon, MAT.glow, MAT.building, MAT.holo, MAT.checker, MAT.padMat,
-    MAT.portal, MAT.neonDS, MAT.strobe, MAT.lmRing1, MAT.lmRing2, MAT.lmBeam, new THREE.MeshBasicMaterial({ map: bannerTex('START', '#19f0ff', '#ffffff') })]) warm.add(new THREE.Mesh(tri, m));
-  warm.add(new THREE.LineSegments(tri, MAT.lmOuter), new THREE.LineSegments(tri, MAT.lmInner));
-  const wi = new THREE.InstancedMesh(tri, MAT.chev, 1); wi.setMatrixAt(0, new THREE.Matrix4()); wi.setColorAt(0, new THREE.Color(1, 1, 1)); warm.add(wi);
-  warm.position.copy(camera.position).addScaledVector(camera.getWorldDirection(_v1), 5);
-  scene.add(warm);
-  renderer.compile(scene, camera);
-  if (!NORENDER) composer.render(0.016);
-  scene.remove(warm); wi.dispose(); tri.dispose();
+  warmShaders();
   const ld = $('loading'); ld.style.opacity = '0'; setTimeout(() => ld.remove(), 700);
   window.__gameStarted = true;
   window.__dbg = () => ({
