@@ -1374,10 +1374,50 @@ function buildMaterials(envMap) {
   MAT.env = envMap;
 }
 
-// Building facade shader: procedural windows, LOD-averaged in the distance.
+// Window patterns baked into a mipmapped texture array: 3 facade styles x 3 lit densities, 8x8 windows
+// per tile. Hardware trilinear + anisotropic filtering then averages windows correctly at any distance
+// and angle; a procedural pattern sampled once per pixel made distant windows pop on and off in motion.
+const WIN_TILE = 8, WIN_PX = 32, WIN_DENS = [0.2, 0.34, 0.5];
+function makeWindowTexture() {
+  const N = WIN_TILE * WIN_PX, layers = 9, data = new Uint8Array(N * N * 4 * layers);
+  const r = mulberry32(4242);
+  const pal = [[1.0, 0.68, 0.42], [0.55, 0.78, 1.0], [0.2, 0.95, 1.0], [1.0, 0.25, 0.65]];
+  const insets = [[0.14, 0.2], [0.02, 0.28], [0.3, 0.04]];
+  for (let style = 0; style < 3; style++) for (let di = 0; di < 3; di++) {
+    const L = style * 3 + di, off = L * N * N * 4, [lx, ly] = insets[style];
+    // one decision per window id (style 1: 4 cells wide, style 2: 3 cells tall), wrapping with the tile
+    const ids = new Map();
+    const win = (cx, cy) => {
+      const key = style === 1 ? Math.floor(cx / 4) + ',' + cy : style === 2 ? cx + ',' + Math.floor(cy / 3) : cx + ',' + cy;
+      if (!ids.has(key)) {
+        const lit = r() < WIN_DENS[di], hc = r();
+        const c = pal[hc < 0.55 ? 0 : hc < 0.78 ? 1 : hc < 0.9 ? 2 : 3], b = 0.25 + 0.75 * r();
+        ids.set(key, lit ? [c[0] * b, c[1] * b, c[2] * b] : null);
+      }
+      return ids.get(key);
+    };
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+      const cx = Math.floor(x / WIN_PX), cy = Math.floor(y / WIN_PX), fx = (x % WIN_PX + 0.5) / WIN_PX, fy = (y % WIN_PX + 0.5) / WIN_PX;
+      let c = [0.02, 0.01, 0.04].map((v) => (fy < 0.06 ? v : 0));                  // floor-line glints
+      const w = win(cx, cy);
+      if (w && fx > lx && fx < 1 - lx && fy > ly && fy < 1 - ly) c = w;
+      const o = off + (y * N + x) * 4;
+      data[o] = Math.round(c[0] * 255); data[o + 1] = Math.round(c[1] * 255); data[o + 2] = Math.round(c[2] * 255); data[o + 3] = 255;
+    }
+  }
+  const tex = new THREE.DataArrayTexture(data, N, N, layers);
+  tex.format = THREE.RGBAFormat; tex.type = THREE.UnsignedByteType;
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.magFilter = THREE.LinearFilter; tex.minFilter = THREE.LinearMipmapLinearFilter;
+  tex.generateMipmaps = true; tex.anisotropy = MAX_ANISO;
+  tex.needsUpdate = true;
+  return tex;
+}
+
+// Building facade shader: windows from the filtered texture array, fogged
 function makeBuildingMaterial() {
   return new THREE.ShaderMaterial({
-    uniforms: { uTime: U.uTime, fogColor: U.fogColor, fogDensity: U.fogDensity },
+    uniforms: { uWin: { value: makeWindowTexture() }, fogColor: U.fogColor, fogDensity: U.fogDensity },
     vertexShader: /* glsl */`
       attribute vec3 aInfo;
       varying vec2 vUv; varying vec3 vInfo; varying vec3 vWorld; varying vec3 vN;
@@ -1387,35 +1427,18 @@ function makeBuildingMaterial() {
         gl_Position = projectionMatrix * viewMatrix * wp;
       }`,
     fragmentShader: /* glsl */`
+      uniform sampler2DArray uWin;
       varying vec2 vUv; varying vec3 vInfo; varying vec3 vWorld; varying vec3 vN;
-      uniform float uTime;
       ${FOG_GLSL}
-      ${HASH_GLSL}
       void main() {
         float dist = length(vWorld - cameraPosition);
         vec3 base = vec3(0.012, 0.011, 0.026) + vec3(0.02, 0.006, 0.03) * exp(-max(vWorld.y, 0.0) * 0.05);
         if (vN.y > 0.5) { gl_FragColor = vec4(applyFog(vec3(0.008, 0.007, 0.016), dist), 1.0); return; }
-        vec2 cell = floor(vUv); vec2 f = fract(vUv);
-        float style = vInfo.y;
-        vec2 lo = style < 0.5 ? vec2(0.14, 0.2) : style < 1.5 ? vec2(0.02, 0.28) : vec2(0.3, 0.04);
-        vec2 fw = fwidth(vUv) + 1e-4;
-        vec2 m = smoothstep(lo, lo + fw, f) * (1.0 - smoothstep(1.0 - lo - fw, 1.0 - lo, f));
-        float mask = m.x * m.y;
-        vec2 id = style < 1.5 ? cell : vec2(cell.x, floor(cell.y / 3.0));
-        if (style > 0.5 && style < 1.5) id = vec2(floor(cell.x / 4.0), cell.y);
-        float h = hash12(id + vInfo.x * 17.13);
-        float lit = step(1.0 - vInfo.z, h);
-        float hc = hash12(id * 1.71 + vInfo.x);
-        vec3 wc = hc < 0.55 ? vec3(1.0, 0.68, 0.42) : hc < 0.78 ? vec3(0.55, 0.78, 1.0) : hc < 0.9 ? vec3(0.2, 0.95, 1.0) : vec3(1.0, 0.25, 0.65);
-        float bright = 0.25 + 0.75 * hash12(id + 3.7);
-        bright *= 0.85 + 0.15 * sin(uTime * (0.5 + hc * 2.0) + h * 40.0) * step(0.97, hc);
-        vec3 win = wc * bright * lit * mask * 1.1;
-        float lod = clamp(max(fw.x, fw.y) * 1.2 - 0.25, 0.0, 1.0);
-        vec3 avg = vec3(0.85, 0.6, 0.62) * vInfo.z * 0.22;
-        vec3 c = base + mix(win, avg, lod);
-        // floor-line glints
-        c += vec3(0.02, 0.01, 0.04) * (1.0 - smoothstep(0.0, 0.06, f.y));
-        gl_FragColor = vec4(applyFog(c, dist), 1.0);
+        float style = clamp(floor(vInfo.y + 0.5), 0.0, 2.0);
+        float dens = vInfo.z < 0.27 ? 0.0 : vInfo.z < 0.42 ? 1.0 : 2.0;
+        vec2 shift = fract(vec2(vInfo.x * 0.6180339, vInfo.x * 0.3819660));   // a different part of the tile per building
+        vec3 win = texture(uWin, vec3(vUv / ${WIN_TILE}.0 + shift, style * 3.0 + dens)).rgb * 1.1;
+        gl_FragColor = vec4(applyFog(base + win, dist), 1.0);
       }`,
   });
 }
