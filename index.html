@@ -1776,6 +1776,60 @@ function buildLandmark() {
   return g;
 }
 
+// --------------------------------------------------------------- advertising blimps
+function holoPlane(w, h, atlasIdx, seed) {
+  const g = new THREE.PlaneGeometry(w, h);
+  const { u0, u1, v0, v1 } = atlasUV(atlasIdx);
+  const uv = g.attributes.uv, n = uv.count;
+  const local = new Float32Array(n * 2), sd = new Float32Array(n).fill(seed);
+  for (let i = 0; i < n; i++) {
+    const x = uv.getX(i), y = uv.getY(i);
+    local[i * 2] = x; local[i * 2 + 1] = y;
+    uv.setXY(i, u0 + x * (u1 - u0), v0 + y * (v1 - v0));
+  }
+  g.setAttribute('aLocal', new THREE.BufferAttribute(local, 2));
+  g.setAttribute('aSeed', new THREE.BufferAttribute(sd, 1));
+  return g;
+}
+function buildBlimps() {
+  const group = new THREE.Group();
+  const hullGeo = new THREE.SphereGeometry(12, 28, 16); hullGeo.scale(1, 1, 3.3);
+  const finGeo = mergeGeos([
+    (() => { const g = new THREE.BoxGeometry(0.6, 14, 8); g.translate(0, 0, -36); return g; })(),
+    (() => { const g = new THREE.BoxGeometry(14, 0.6, 8); g.translate(0, 0, -36); return g; })(),
+    (() => { const g = new THREE.BoxGeometry(6, 4, 12); g.translate(0, -12.5, 4); return g; })(),
+  ]);
+  const hullMat = new THREE.MeshStandardMaterial({ color: 0x1a1830, metalness: 0.7, roughness: 0.35, envMapIntensity: 1.2 });
+  const navRed = new THREE.MeshBasicMaterial({ color: hdr(0xff2040, 6) }), navWhite = new THREE.MeshBasicMaterial({ color: hdr(0xffffff, 6) });
+  const lm = WORLD.landmark;
+  const blimps = [];
+  [[1150, 230, 0.016, 0, 6], [1500, 300, -0.011, 2.4, 14]].forEach(([rad, alt, speed, ph, ad], k) => {
+    const b = new THREE.Group();
+    b.add(new THREE.Mesh(hullGeo, hullMat), new THREE.Mesh(finGeo, hullMat));
+    for (const side of [-1, 1]) {
+      const screen = new THREE.Mesh(holoPlane(34, 17, ad + (side > 0 ? 0 : 3), k * 3 + side), MAT.holo);
+      screen.position.set(side * 12.4, 1, 0); screen.rotation.y = side * Math.PI / 2;
+      b.add(screen);
+    }
+    const lights = [];
+    for (const [x, y, z, m] of [[0, 12.2, 10, navRed], [0, 12.2, -12, navWhite], [0, -14.6, 4, navRed]]) {
+      const l = new THREE.Mesh(new THREE.SphereGeometry(0.6, 8, 6), m); l.position.set(x, y, z); b.add(l); lights.push(l);
+    }
+    group.add(b);
+    blimps.push({ b, rad, alt, speed, ph, lights });
+  });
+  WORLD.animated.push((t) => {
+    for (const bl of blimps) {
+      const a = bl.ph + t * bl.speed;
+      bl.b.position.set(lm.x + Math.cos(a) * bl.rad, bl.alt + Math.sin(t * 0.2 + bl.ph) * 6, lm.y + Math.sin(a) * bl.rad);
+      bl.b.rotation.y = Math.atan2(-Math.sin(a) * Math.sign(bl.speed), Math.cos(a) * Math.sign(bl.speed));
+      const on = Math.sin(t * 5 + bl.ph) > 0.6;
+      bl.lights.forEach((l, i) => { l.visible = i === 1 ? !on : on; });
+    }
+  });
+  return group;
+}
+
 // --------------------------------------------------------------- sky
 function buildSky() {
   const g = new THREE.Group();
@@ -2001,6 +2055,20 @@ function initCarShared() {
   CAR_SHARED.shadow = shadow;
   const pool = new THREE.PlaneGeometry(10, 24); pool.rotateX(-Math.PI / 2); pool.rotateY(Math.PI); pool.translate(0, 0.07, 2.2 + 12);
   CAR_SHARED.pool = pool;
+  // light shafts in the rain: an open cone from the nose, fading with length and at grazing angles
+  const beam = new THREE.CylinderGeometry(0.35, 4.2, 22, 18, 1, true);
+  beam.translate(0, -11, 0); beam.rotateX(-Math.PI / 2 + 0.06); beam.translate(0, 0.5, 2.25);
+  CAR_SHARED.beam = beam;
+  CAR_SHARED.beamMat = new THREE.ShaderMaterial({
+    uniforms: { uI: { value: 0.07 } },
+    transparent: true, depthWrite: false, blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
+    vertexShader: `varying float vV; varying vec3 vN; varying vec3 vView; void main(){ vV = 1.0 - uv.y; vN = normalize(normalMatrix * normal);
+      vec4 mv = modelViewMatrix * vec4(position, 1.0); vView = normalize(-mv.xyz); gl_Position = projectionMatrix * mv; }`,
+    fragmentShader: `uniform float uI; varying float vV; varying vec3 vN; varying vec3 vView; void main(){
+      float edge = pow(abs(dot(normalize(vN), normalize(vView))), 1.4);
+      float a = edge * pow(1.0 - vV, 1.8) * smoothstep(0.0, 0.04, vV) * uI;
+      gl_FragColor = vec4(vec3(0.75, 0.85, 1.0) * a, 1.0); }`,
+  });
   CAR_SHARED.glass = new THREE.MeshPhysicalMaterial({ color: 0x07070e, metalness: 0.9, roughness: 0.06, envMapIntensity: 1.8, clearcoat: 1, clearcoatRoughness: 0.03 });
   CAR_SHARED.shadowMat = new THREE.MeshBasicMaterial({ map: MAT.shadowTex, transparent: true, depthWrite: false,
     polygonOffset: true, polygonOffsetFactor: -4, polygonOffsetUnits: -4 });
@@ -2068,6 +2136,7 @@ function buildCarMesh(o) {
     blending: THREE.AdditiveBlending, polygonOffset: true, polygonOffsetFactor: -6, polygonOffsetUnits: -6 });
   const under = new THREE.Mesh(CAR_SHARED.under, underMat); under.renderOrder = 2; root.add(under);
   const pool = new THREE.Mesh(CAR_SHARED.pool, o.isPlayer ? CAR_SHARED.poolMatPlayer : CAR_SHARED.poolMat); pool.renderOrder = 2; root.add(pool);
+  const beam = new THREE.Mesh(CAR_SHARED.beam, CAR_SHARED.beamMat); beam.renderOrder = 5; body.add(beam);
   return { root, body, wheels, pivots, flames, flameMat, paint, under, pool, shadow, lamps, lampGeo, tailVerts, braking: false };
 }
 
@@ -3258,7 +3327,7 @@ class AudioSys {
     const sN = clamp(st.speed / TOP_SPEED, 0, 1.3);
     this.set(this.wind.g.gain, st.engineOn ? 0.02 + sN * sN * 0.22 : 0, 0.1);
     this.set(this.wind.chain[0].frequency, 280 + sN * 1100, 0.1);
-    this.set(this.windHi.g.gain, st.engineOn ? sN * sN * sN * 0.1 + (st.boost ? 0.05 : 0) : 0, 0.1);
+    this.set(this.windHi.g.gain, st.engineOn ? sN * sN * sN * 0.1 + (st.boost ? 0.05 : 0) + (st.draft || 0) * 0.07 : 0, 0.1);
     this.set(this.rainL.g.gain, (0.03 + 0.05 * (1 - st.tunnel)) * (st.menu ? 1.8 : 1), 0.3);
     const sk = clamp(st.skid, 0, 1);
     this.set(this.skid.g.gain, sk * 0.22, 0.04); this.set(this.skid2.g.gain, sk * 0.12, 0.04);
@@ -3979,27 +4048,45 @@ function makeFinalShader(samples) {
     uniforms: {
       tDiffuse: { value: null }, uTime: { value: 0 }, uBlur: { value: 0 }, uCA: { value: 0.002 }, uVignette: { value: 0.35 },
       uGrain: { value: 0.035 }, uFlash: { value: 0 }, uCenter: { value: new THREE.Vector2(0.5, 0.55) }, uLift: { value: 0.0 },
+      uLens: { value: 0 }, uAspect: { value: 1.7 },
     },
     vertexShader: `varying vec2 vUv; void main(){ vUv = uv; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
     fragmentShader: /* glsl */`
       #define SAMPLES ${samples}
-      uniform sampler2D tDiffuse; uniform float uTime, uBlur, uCA, uVignette, uGrain, uFlash, uLift; uniform vec2 uCenter;
+      uniform sampler2D tDiffuse; uniform float uTime, uBlur, uCA, uVignette, uGrain, uFlash, uLift, uLens, uAspect; uniform vec2 uCenter;
       varying vec2 vUv;
       float hash(vec2 p) { vec3 p3 = fract(vec3(p.xyx) * .1031); p3 += dot(p3, p3.yzx + 33.33); return fract((p3.x + p3.y) * p3.z); }
+      // rain on the lens: sparse drops that appear, refract the image and evaporate
+      vec3 lensDrop(vec2 uv) {
+        vec2 p = vec2(uv.x * uAspect, uv.y) * 6.0;
+        vec2 id = floor(p), f = fract(p) - 0.5;
+        float h = hash(id);
+        if (h < 0.62) return vec3(0.0);
+        float life = fract(uTime * (0.12 + 0.18 * hash(id + 9.1)) + h * 13.0);
+        vec2 c = (vec2(hash(id + 1.3), hash(id + 2.7)) - 0.5) * 0.55;
+        c.y -= life * life * 0.25;
+        float r = 0.07 + 0.11 * hash(id + 5.1);
+        vec2 d = f - c;
+        float m = (1.0 - smoothstep(r * 0.55, r, length(d))) * (1.0 - life) * smoothstep(0.0, 0.08, life);
+        return vec3(-d * m * 0.9 / 6.0, m);
+      }
       void main() {
-        vec2 dir = vUv - uCenter;
+        vec2 uvIn = vUv;
+        vec3 ld = uLens > 0.01 ? lensDrop(vUv) : vec3(0.0);
+        uvIn += ld.xy * uLens;
+        vec2 dir = uvIn - uCenter;
         float dist = length(dir);
         vec2 ca = dir * uCA * (0.4 + dist * 2.0);
         vec3 col;
         float amt = uBlur * smoothstep(0.05, 0.65, dist);
         if (amt < 0.0015) {
-          col = vec3(texture2D(tDiffuse, vUv + ca).r, texture2D(tDiffuse, vUv).g, texture2D(tDiffuse, vUv - ca).b);
+          col = vec3(texture2D(tDiffuse, uvIn + ca).r, texture2D(tDiffuse, uvIn).g, texture2D(tDiffuse, uvIn - ca).b);
         } else {
           col = vec3(0.0);
           float j = hash(vUv * 731.0 + fract(uTime));
           for (int i = 0; i < SAMPLES; i++) {
             float t = (float(i) + j) / float(SAMPLES);
-            vec2 uv = vUv - dir * amt * t;
+            vec2 uv = uvIn - dir * amt * t;
             col.r += texture2D(tDiffuse, uv + ca).r;
             col.g += texture2D(tDiffuse, uv).g;
             col.b += texture2D(tDiffuse, uv - ca).b;
@@ -4010,6 +4097,7 @@ function makeFinalShader(samples) {
         float l = dot(col, vec3(0.299, 0.587, 0.114));
         col += vec3(0.012, 0.0, 0.03) * (1.0 - smoothstep(0.0, 0.35, l));
         col = mix(col, col * col * (3.0 - 2.0 * col), 0.18);
+        col += ld.z * uLens * vec3(0.05, 0.06, 0.09);
         float vig = smoothstep(1.05, 0.25, dist * 1.25);
         col *= mix(1.0 - uVignette, 1.0, vig);
         col += (hash(vUv * 1024.0 + fract(uTime * 7.13)) - 0.5) * uGrain;
@@ -4389,6 +4477,10 @@ function updateWorld(rawDt, dt) {
   fu.uCA.value = damp(fu.uCA.value, 0.0015 + top * 0.003 + (boost ? 0.004 : 0), 5, rawDt);
   fu.uFlash.value = damp(fu.uFlash.value, 0, 5, rawDt);
   fu.uVignette.value = game.state === 'title' ? 0.45 : 0.32 + top * 0.12;
+  // drops only settle on the lens in the rain, and get blown off at speed
+  const lensT = outside * (Cam.mode === 'hood' && game.state === 'race' ? 0.5 : 1) * (1 - smoothstep(0.25, 0.8, sN) * 0.8);
+  fu.uLens.value = damp(fu.uLens.value, lensT, 1.5, rawDt);
+  fu.uAspect.value = innerWidth / innerHeight;
   bloomPass.strength = damp(bloomPass.strength, 0.55 + top * 0.3 + (boost ? 0.2 : 0), 4, rawDt);
   // audio
   if (audio.ok) {
@@ -4410,7 +4502,7 @@ function updateWorld(rawDt, dt) {
       rpm: focus.rpm, throttle: focus.ctl.throttle, speed: Math.abs(focus.speed), boost: boost,
       shifting: focus.shiftTimer > 0.02, limiter: focus.limiter,
       skid: focus.grounded ? Math.max(focus.drifting ? 0.45 + Math.min(Math.abs(focus.slip), 0.8) : 0, clamp((Math.abs(focus.slip) - 0.12) * 2.5, 0, 1)) * clamp(Math.abs(focus.speed) / 20, 0, 1) : 0,
-      scrape: focus.scrape, tunnel: camS, slowmo: game.state === 'finish' ? 1 - game.timeScale : 0,
+      scrape: focus.scrape, tunnel: camS, draft: game.state === 'race' ? focus.slipstream : 0, slowmo: game.state === 'finish' ? 1 - game.timeScale : 0,
       paused: game.paused, engineOn: racingView || Cam.shot !== 3, menu: !racingView, opp: oppInfo,
     });
   }
@@ -4503,6 +4595,7 @@ async function init() {
   const holo = new THREE.Mesh(WORLD.holoBatch.build(), MAT.holo);
   holo.renderOrder = 4; scene.add(holo);
   scene.add(buildLandmark());
+  scene.add(buildBlimps());
   scene.add(buildSky());
   // lighting: dim moonlight + hemisphere; the neon does the rest
   LIGHTNING.hemi = new THREE.HemisphereLight(0x6a4cc0, 0x12081f, 0.35);
