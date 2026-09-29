@@ -2130,16 +2130,22 @@ function buildSurroundings() {
   tg.setAttribute('aDir', new THREE.BufferAttribute(td, 3));
   tg.setAttribute('aParams', new THREE.BufferAttribute(ta, 4));
   const tm = new THREE.ShaderMaterial({
-    uniforms: { uTime: U.uTime, fogColor: U.fogColor, fogDensity: U.fogDensity },
+    uniforms: { uTime: U.uTime, fogColor: U.fogColor, fogDensity: U.fogDensity, uCam: { value: new THREE.Vector3() }, uOff: { value: new THREE.Vector2() } },
     transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
     vertexShader: /* glsl */`
-      attribute vec3 aDir; attribute vec4 aParams; uniform float uTime;
+      attribute vec3 aDir; attribute vec4 aParams; uniform float uTime; uniform vec3 uCam; uniform vec2 uOff;
       varying vec3 vCol; varying float vDist;
+      const float P = 3000.0;
       void main() {
-        vec3 p = position + aDir * mod(aParams.z + uTime * aParams.x, aParams.y);
-        vec4 mv = modelViewMatrix * vec4(p, 1.0);
+        // each flying car keeps a world position (drifting along its lane) and wraps around the camera
+        // far out in the fog; it fades out before the wrap and at the ends of its lane, so nothing pops
+        float along = mod(aParams.z + uTime * aParams.x, aParams.y), u = along / aParams.y;
+        vec3 p = position + aDir * along;
+        p.xz = uCam.xz + mod(p.xz - uCam.xz - uOff, P) - 0.5 * P;
+        vec4 mv = viewMatrix * vec4(p, 1.0);
         vDist = -mv.z;
-        vCol = aParams.w < 0.5 ? vec3(1.0, 0.95, 0.85) * 3.0 : vec3(1.0, 0.15, 0.35) * 3.0;
+        float fade = smoothstep(0.0, 0.05, u) * smoothstep(1.0, 0.95, u) * smoothstep(1400.0, 1000.0, length(p.xz - uCam.xz));
+        vCol = (aParams.w < 0.5 ? vec3(1.0, 0.95, 0.85) * 3.0 : vec3(1.0, 0.15, 0.35) * 3.0) * fade;
         gl_PointSize = clamp(900.0 / vDist, 1.5, 7.0);
         gl_Position = projectionMatrix * mv;
       }`,
@@ -2149,7 +2155,8 @@ function buildSurroundings() {
       void main() { vec2 c = gl_PointCoord - 0.5; float a = smoothstep(0.5, 0.1, length(c));
         gl_FragColor = vec4(vCol * a * (1.0 - fogAmount(vDist) * 0.85), 1.0); }`,
   });
-  const tpts = new THREE.Points(tg, tm); tpts.frustumCulled = false; group.add(tpts);
+  const tpts = new THREE.Points(tg, tm); tpts.frustumCulled = false;
+  WORLD.skyTraffic = tpts;                     // lives in world space, not in the snapped group
   const groundMat = new THREE.ShaderMaterial({
     uniforms: { fogColor: U.fogColor, fogDensity: U.fogDensity, uTime: U.uTime, uOrigin: U.uOrigin },
     vertexShader: `varying vec3 vWorld; void main(){ vec4 wp = modelMatrix * vec4(position,1.0); vWorld = wp.xyz; gl_Position = projectionMatrix * viewMatrix * wp; }`,
@@ -3084,23 +3091,24 @@ class Rain {
     g.setAttribute('aEnd', new THREE.BufferAttribute(ends, 1));
     this.mat = new THREE.ShaderMaterial({
       uniforms: { uTime: U.uTime, uCam: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() },
-        uBox: { value: new THREE.Vector3(64, 34, 64) }, uAlpha: { value: 1 } },
+        uBox: { value: new THREE.Vector3(64, 34, 64) }, uAlpha: { value: 1 }, uOff: { value: new THREE.Vector3() } },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: /* glsl */`
-        attribute float aEnd; uniform float uTime; uniform vec3 uCam; uniform vec3 uVel; uniform vec3 uBox; uniform float uAlpha;
+        attribute float aEnd; uniform float uTime; uniform vec3 uCam; uniform vec3 uVel; uniform vec3 uBox; uniform float uAlpha; uniform vec3 uOff;
         varying float vA;
         void main() {
           vec3 seed = position;
           float spd = 0.8 + 0.4 * fract(seed.x * 91.7);
           vec3 fall = vec3(3.0, -26.0, 1.5) * spd;
           vec3 p = seed * uBox + fall * uTime;
-          vec3 rel = mod(p - uCam, uBox) - uBox * 0.5;
+          vec3 rel = mod(p - uCam - uOff, uBox) - uBox * 0.5;   // uOff: floating-origin shift, so re-centring never reshuffles the drops
           vec3 rv = fall - uVel;
           float rl = length(rv);
           float len = clamp(rl * 0.022, 0.35, 4.0);
           vec3 wp = uCam + rel - (rv / max(rl, 0.001)) * len * aEnd;
           float dist = length(rel);
-          vA = uAlpha * (1.0 - aEnd * 0.9) * smoothstep(uBox.x * 0.5, uBox.x * 0.28, dist) * smoothstep(0.5, 2.2, dist);
+          vA = uAlpha * (1.0 - aEnd * 0.9) * smoothstep(uBox.x * 0.5, uBox.x * 0.28, dist) * smoothstep(0.5, 2.2, dist)
+            * smoothstep(uBox.y * 0.5, uBox.y * 0.34, abs(rel.y));   // drops wrap top<->bottom unseen
           gl_Position = projectionMatrix * viewMatrix * vec4(wp, 1.0);
         }`,
       fragmentShader: `varying float vA; void main(){ gl_FragColor = vec4(vec3(0.5, 0.58, 0.9) * vA * 0.38, 1.0); }`,
@@ -3128,14 +3136,14 @@ class SpeedDust {
     g.setAttribute('aEnd', new THREE.BufferAttribute(ends, 1));
     this.mat = new THREE.ShaderMaterial({
       uniforms: { uCam: { value: new THREE.Vector3() }, uVel: { value: new THREE.Vector3() }, uFwd: { value: new THREE.Vector3(0, 0, 1) },
-        uBox: { value: new THREE.Vector3(56, 22, 56) }, uAlpha: { value: 0 } },
+        uBox: { value: new THREE.Vector3(56, 22, 56) }, uAlpha: { value: 0 }, uOff: { value: new THREE.Vector3() } },
       transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
       vertexShader: /* glsl */`
-        attribute float aEnd; uniform vec3 uCam; uniform vec3 uVel; uniform vec3 uFwd; uniform vec3 uBox; uniform float uAlpha;
+        attribute float aEnd; uniform vec3 uCam; uniform vec3 uVel; uniform vec3 uFwd; uniform vec3 uBox; uniform float uAlpha; uniform vec3 uOff;
         varying float vA; varying vec3 vC;
         void main() {
           vec3 seed = position;
-          vec3 rel = mod(seed * uBox * 7.0 - uCam, uBox) - uBox * 0.5;
+          vec3 rel = mod(seed * uBox * 7.0 - uCam - uOff, uBox) - uBox * 0.5;
           vec3 lat = rel - uFwd * dot(rel, uFwd);
           float r = length(lat);
           if (r < 4.0) rel += (lat / max(r, 0.01)) * (4.0 - r);
@@ -5135,6 +5143,11 @@ function updateWorld(rawDt, dt) {
   Stream.animate(U.uTime.value);
   WORLD.sky.position.copy(camera.position);
   U.uOrigin.value.set(track.origin.x, track.origin.z);
+  // world-anchored particles must ignore the floating-origin re-centring
+  FX.rain.mat.uniforms.uOff.value.set(mod(track.origin.x, 64), 0, mod(track.origin.z, 64));
+  FX.dust.mat.uniforms.uOff.value.set(mod(track.origin.x, 56), 0, mod(track.origin.z, 56));
+  WORLD.skyTraffic.material.uniforms.uCam.value.copy(camera.position);
+  WORLD.skyTraffic.material.uniforms.uOff.value.set(mod(track.origin.x, 3000), mod(track.origin.z, 3000));
   WORLD.surroundings.position.set(Math.round(camera.position.x / 44) * 44, 0, Math.round(camera.position.z / 44) * 44);
   updateLightning(dt, camS);
   const sN = clamp(Math.abs(focus.speed) / TOP_SPEED, 0, 1.3);
@@ -5280,6 +5293,7 @@ async function init() {
   scene.add(buildSky());
   scene.add(WORLD.beams);
   scene.add(buildSurroundings());
+  scene.add(WORLD.skyTraffic);
   // lighting: dim moonlight + hemisphere; the neon does the rest
   LIGHTNING.hemi = new THREE.HemisphereLight(0x6a4cc0, 0x12081f, 0.35);
   scene.add(LIGHTNING.hemi);
